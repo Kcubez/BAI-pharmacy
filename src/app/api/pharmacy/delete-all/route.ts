@@ -1,0 +1,77 @@
+import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { notDeleted, softDeleteData } from "@/lib/soft-delete";
+import { bumpCacheVersion, publishEvent } from "@/lib/upstash";
+import { NextRequest, NextResponse } from "next/server";
+
+// Scoped soft-delete for pharmacy test-data resets (commerce delete-all
+// pattern). Rows are recoverable via POST /api/pharmacy/restore — except
+// product Min/Max levels, which are reset to null (re-import STOCK BY PRICE
+// to restore them).
+export const PHARMA_DELETE_SCOPES = [
+  "purchase",
+  "sales",
+  "receivable",
+  "stock",
+  "levels",
+  "all",
+] as const;
+
+export type PharmaDeleteScope = (typeof PHARMA_DELETE_SCOPES)[number];
+
+function isScope(v: string | null): v is PharmaDeleteScope {
+  return !!v && (PHARMA_DELETE_SCOPES as readonly string[]).includes(v);
+}
+
+// DELETE /api/pharmacy/delete-all?scope=purchase|sales|receivable|stock|levels|all
+export async function DELETE(req: NextRequest) {
+  const session = await auth.api.getSession({ headers: req.headers });
+  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+
+  const scope = req.nextUrl.searchParams.get("scope");
+  if (!isScope(scope)) {
+    return NextResponse.json({ message: "Valid scope required: purchase|sales|receivable|stock|levels|all" }, { status: 400 });
+  }
+
+  const userId = session.user.id;
+  const data = softDeleteData(userId, `Pharmacy delete-all (${scope})`);
+  const counts: Record<string, number> = {};
+  const wipe = async (key: string, fn: () => Promise<{ count: number }>) => {
+    counts[key] = (await fn()).count;
+  };
+
+  if (scope === "purchase" || scope === "all") {
+    await wipe("purchaseOrders", () => prisma.purchaseOrder.updateMany({ where: { userId, ...notDeleted }, data }));
+    await wipe("purchaseInvoices", () => prisma.purchaseInvoice.updateMany({ where: { userId, ...notDeleted }, data }));
+  }
+  if (scope === "sales" || scope === "all") {
+    await wipe("salesLines", () => prisma.salesLine.updateMany({ where: { userId, ...notDeleted }, data }));
+  }
+  if (scope === "receivable" || scope === "all") {
+    await wipe("receivables", () => prisma.receivable.updateMany({ where: { userId, ...notDeleted }, data }));
+  }
+  if (scope === "stock" || scope === "all") {
+    await wipe("stockSnapshots", () => prisma.stockSnapshot.updateMany({ where: { userId, ...notDeleted }, data }));
+    await wipe("stockMovements", () => prisma.stockMovement.updateMany({ where: { userId, ...notDeleted }, data }));
+  }
+  if (scope === "levels" || scope === "all") {
+    await wipe("expiryLots", () => prisma.expiryLot.updateMany({ where: { userId, ...notDeleted }, data }));
+    await wipe("stockReturns", () => prisma.stockReturn.updateMany({ where: { userId, ...notDeleted }, data }));
+    await wipe("storeInLots", () => prisma.storeInLot.updateMany({ where: { userId, ...notDeleted }, data }));
+    // Min/Max live on the product row — reset one-way (re-import restores).
+    counts["resetLevels"] = (await prisma.pharmaProduct.updateMany({
+      where: { userId, ...notDeleted, OR: [{ minQty: { not: null } }, { maxQty: { not: null } }] },
+      data: { minQty: null, maxQty: null },
+    })).count;
+  }
+  if (scope === "all") {
+    // Masters last (transaction rows already trashed; FKs are SetNull).
+    await wipe("suppliers", () => prisma.supplier.updateMany({ where: { userId, ...notDeleted }, data }));
+    await wipe("products", () => prisma.pharmaProduct.updateMany({ where: { userId, ...notDeleted }, data }));
+  }
+
+  const total = Object.values(counts).reduce((s, n) => s + n, 0);
+  await bumpCacheVersion("pharmacy", userId);
+  await publishEvent(userId, "pharmacy");
+  return NextResponse.json({ success: true, scope, counts, total });
+}

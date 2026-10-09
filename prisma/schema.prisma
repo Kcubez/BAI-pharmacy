@@ -1,0 +1,1133 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Better Auth Required Tables ────────────────────────────────────────────
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean
+  image         String?
+  createdAt     DateTime
+  updatedAt     DateTime
+  role          String    @default("user") // "user" | "admin"
+  banned        Boolean?
+  banReason     String?
+  banExpires    DateTime?
+
+  sessions              Session[]
+  accounts              Account[]
+  botSettings           BotSettings?
+  projectExpirations    ProjectExpiration[]
+  websiteUpdates        WebsiteUpdate[]
+  businessReports       BusinessReport[]
+  demandImportBatches   DemandImportBatch[]
+  telegramSenders       TelegramSender[]
+  customers             Customer[]
+  periodTargets         PeriodTarget[]
+  qaDocuments           QADocument[]
+  deals                 Deal[]
+  products              Product[]
+  expenses              Expense[]
+  financeEntries        FinanceEntry[]
+  expenseBudgets        ExpenseBudget[]
+  marketingMetrics      MarketingMetric[]
+  reviewedFollowUpNotes FollowUpNote[]      @relation("FollowUpNoteReviewer")
+  suppliers             Supplier[]
+  pharmaProducts        PharmaProduct[]
+  purchaseOrders        PurchaseOrder[]
+  purchaseInvoices      PurchaseInvoice[]
+  stockSnapshots        StockSnapshot[]
+  stockMovements        StockMovement[]
+  expiryLots            ExpiryLot[]
+  stockReturns          StockReturn[]
+  storeInLots           StoreInLot[]
+  receivables           Receivable[]
+  salesLines            SalesLine[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime
+  updatedAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+
+  @@map("verification")
+}
+
+// ─── Customer Management ──────────────────────────────────────────────────────
+
+model Customer {
+  id               String    @id @default(cuid())
+  userId           String?   @map("user_id")
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  nameNormalized   String?
+  phone            String?
+  email            String?
+  company          String?
+  notes            String?
+  status           String    @default("active")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+
+  demandRecords DemandRecord[]
+  activities    CustomerActivity[]
+  deals         Deal[]
+
+  @@unique([userId, nameNormalized])
+  @@index([nameNormalized])
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("customer")
+}
+
+model CustomerActivity {
+  id          String          @id @default(cuid())
+  customerId  String
+  customer    Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  action      String
+  description String
+  senderId    String?
+  sender      TelegramSender? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  createdAt   DateTime        @default(now())
+
+  @@index([customerId])
+  @@index([createdAt])
+  @@map("customer_activity")
+}
+
+// ─── Telegram Data Collection ────────────────────────────────────────────────
+
+model TelegramSender {
+  id               String    @id @default(cuid())
+  telegramUserId   BigInt?
+  firstName        String?
+  lastName         String?
+  username         String?
+  displayName      String?
+  messageCount     Int       @default(0)
+  lastMessageAt    DateTime?
+  activeReportType String    @default("none")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Multi-tenant scoping to the Business Owner's User account
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Verification & Authorization
+  email              String?
+  isVerified         Boolean   @default(false)
+  otpCode            String?
+  otpExpiresAt       DateTime?
+  isAuthorized       Boolean   @default(false)
+  allowedDepartments String[]  @default([])
+
+  messages             TelegramMessage[]
+  demandRecords        DemandRecord[]
+  activities           CustomerActivity[]
+  businessReports      BusinessReport[]
+  pendingDemandImports PendingDemandImport[]
+
+  @@unique([userId, telegramUserId])
+  @@index([telegramUserId])
+  @@map("telegram_sender")
+}
+
+model TelegramMessage {
+  id                   String                @id @default(cuid())
+  telegramMsgId        Int
+  text                 String
+  senderId             String
+  sender               TelegramSender        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  chatId               BigInt
+  chatTitle            String?
+  receivedAt           DateTime              @default(now())
+  createdAt            DateTime              @default(now())
+  demandRecords        DemandRecord[]
+  pendingDemandImports PendingDemandImport[]
+  businessReports      BusinessReport[]
+  followUpNotes        FollowUpNote[]
+
+  @@unique([senderId, telegramMsgId])
+  @@index([senderId])
+  @@index([receivedAt])
+  @@map("telegram_message")
+}
+
+model PendingDemandImport {
+  id               String          @id @default(cuid())
+  senderId         String
+  sender           TelegramSender  @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  messageId        String
+  message          TelegramMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  chatId           BigInt          @map("chat_id")
+  previewMessageId Int?            @map("preview_message_id")
+  fileName         String          @map("file_name")
+  fileType         String?         @map("file_type")
+  extractedText    String          @map("extracted_text")
+  parsedRows       Json            @map("parsed_rows")
+  summary          Json?
+  errors           String[]        @default([])
+  status           String          @default("pending")
+  expiresAt        DateTime        @map("expires_at")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  @@index([senderId])
+  @@index([messageId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("pending_demand_import")
+}
+
+model DemandImportBatch {
+  id               String   @id @default(cuid())
+  fileName         String   @map("file_name")
+  fileType         String?  @map("file_type")
+  status           String   @default("imported")
+  source           String   @default("dashboard_upload")
+  detectedColumns  Json?    @map("detected_columns")
+  columnMapping    Json?    @map("column_mapping")
+  rowCount         Int      @default(0) @map("row_count")
+  importedCount    Int      @default(0) @map("imported_count")
+  uploadedByUserId String?  @map("uploaded_by_user_id")
+  uploadedBy       User?    @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  records DemandRecord[]
+
+  @@index([createdAt])
+  @@index([status])
+  @@map("demand_import_batch")
+}
+
+model DemandRecord {
+  id             String             @id @default(cuid())
+  messageId      String
+  message        TelegramMessage    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         TelegramSender     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  customerId     String?
+  customer       Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName   String?
+  category       String             @default("general")
+  status         String             @default("new")
+  note           String
+  sourceType     String             @default("telegram") @map("source_type")
+  sourceFileName String?            @map("source_file_name")
+  sourceChannel  String?            @map("source_channel")
+  rawData        Json?              @map("raw_data")
+  normalizedData Json?              @map("normalized_data")
+  importBatchId  String?            @map("import_batch_id")
+  importBatch    DemandImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  // Demand Sheet fields
+  serviceName    String?
+  serviceAmount  Float?
+  serviceQty     Int?
+  followUpDate   DateTime?
+  followUpStatus String    @default("not_scheduled") @map("follow_up_status")
+
+  // Priority analysis
+  priority          String   @default("medium")
+  potentialScore    Int      @default(50) @map("potential_score")
+  priorityReason    String?  @map("priority_reason")
+  recommendedAction String?  @map("recommended_action")
+  missingFields     String[] @default([]) @map("missing_fields")
+
+  confidence       Float     @default(0.35)
+  aiProvider       String    @default("heuristic")
+  aiModel          String?
+  extractedAt      DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+
+  @@index([messageId])
+  @@index([senderId])
+  @@index([category])
+  @@index([status])
+  @@index([followUpDate])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([customerId])
+  @@index([serviceName])
+  @@index([priority])
+  @@index([potentialScore])
+  @@index([importBatchId])
+  @@index([sourceType])
+  @@map("demand_record")
+}
+
+// ─── Commerce Sales, Inventory & Finance ────────────────────────────────────
+
+enum DealStage {
+  NEW_LEAD
+  QUOTED
+  FOLLOW_UP_NEEDED
+  PENDING
+  WON
+  LOST
+}
+
+enum FulfillmentStatus {
+  NOT_APPLICABLE
+  PENDING
+  PROCESSING
+  FULFILLED
+  CANCELLED
+}
+
+enum FollowUpNoteStatus {
+  DRAFT
+  ACCEPTED
+  EDITED
+  DISMISSED
+}
+
+enum ExpenseCategory {
+  COGS
+  MARKETING_AND_ADS
+  LOGISTICS_AND_FULFILLMENT
+  PLATFORM_AND_TRANSACTION_FEES
+  STAFFING
+  OPERATIONS_AND_OVERHEAD
+  RETURNS_REFUNDS_AND_LOSS
+  MISCELLANEOUS
+}
+
+model Product {
+  id                String    @id @default(cuid())
+  userId            String    @map("user_id")
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name              String
+  sku               String
+  category          String?
+  unitCost          Float?    @map("unit_cost")
+  sellingPrice      Float?    @map("selling_price")
+  stockQty          Int       @default(0) @map("stock_qty")
+  lowStockThreshold Int       @default(0) @map("low_stock_threshold")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+  deletedByUserId   String?   @map("deleted_by_user_id")
+  deletedReason     String?   @map("deleted_reason")
+  restoredAt        DateTime? @map("restored_at")
+  restoredByUserId  String?   @map("restored_by_user_id")
+
+  dealItems DealItem[]
+
+  @@unique([userId, sku])
+  @@index([userId])
+  @@index([deletedAt])
+  @@index([stockQty])
+  @@map("product")
+}
+
+model Deal {
+  id                String            @id @default(cuid())
+  userId            String            @map("user_id")
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customerId        String?           @map("customer_id")
+  customer          Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  stage             DealStage         @default(NEW_LEAD)
+  fulfillmentStatus FulfillmentStatus @default(NOT_APPLICABLE) @map("fulfillment_status")
+  source            String            @default("telegram")
+  sourceChannel     String?           @map("source_channel")
+  quotedAmount      Float?            @map("quoted_amount")
+  lastContactAt     DateTime?         @map("last_contact_at")
+  wonAt             DateTime?         @map("won_at")
+  lostAt            DateTime?         @map("lost_at")
+  lostReason        String?           @map("lost_reason")
+  note              String?
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+  deletedAt         DateTime?         @map("deleted_at")
+  deletedByUserId   String?           @map("deleted_by_user_id")
+  deletedReason     String?           @map("deleted_reason")
+  restoredAt       DateTime?         @map("restored_at")
+  restoredByUserId String?           @map("restored_by_user_id")
+  importKey        String?           @map("import_key")
+
+  items         DealItem[]
+  followUpNotes FollowUpNote[]
+
+  @@index([userId, stage])
+  @@index([customerId])
+  @@index([lastContactAt])
+  @@index([fulfillmentStatus])
+  @@index([deletedAt])
+  @@unique([userId, importKey])
+  @@map("deal")
+}
+
+model DealItem {
+  id          String   @id @default(cuid())
+  dealId      String   @map("deal_id")
+  deal        Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  productId   String?  @map("product_id")
+  product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productName String   @map("product_name")
+  sku         String?
+  quantity    Int      @default(1)
+  unitPrice   Float    @map("unit_price")
+  unitCost    Float?   @map("unit_cost")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([dealId])
+  @@index([productId])
+  @@map("deal_item")
+}
+
+model FollowUpNote {
+  id                    String             @id @default(cuid())
+  dealId                String             @map("deal_id")
+  deal                  Deal               @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  messageId             String?            @map("message_id")
+  message               TelegramMessage?   @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  aiDraftedText         String             @map("ai_drafted_text")
+  ownerNote             String?            @map("owner_note")
+  intentDetected        String?            @map("intent_detected")
+  suggestedNextAction   String?            @map("suggested_next_action")
+  suggestedFollowUpDate DateTime?          @map("suggested_follow_up_date")
+  status                FollowUpNoteStatus @default(DRAFT)
+  reviewedByUserId      String?            @map("reviewed_by_user_id")
+  reviewedBy            User?              @relation("FollowUpNoteReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  reviewedAt            DateTime?          @map("reviewed_at")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+
+  @@index([dealId, status])
+  @@index([messageId])
+  @@index([suggestedFollowUpDate])
+  @@map("follow_up_note")
+}
+
+model Expense {
+  id               String          @id @default(cuid())
+  userId           String          @map("user_id")
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category         ExpenseCategory
+  subcategory      String?
+  amount           Float
+  expenseDate      DateTime        @map("expense_date")
+  vendor           String?
+  note             String?
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  deletedAt        DateTime?       @map("deleted_at")
+  deletedByUserId  String?         @map("deleted_by_user_id")
+  deletedReason    String?         @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey        String?   @map("import_key")
+
+  @@index([userId, category])
+  @@index([expenseDate])
+  @@index([deletedAt])
+  @@unique([userId, importKey])
+  @@map("expense")
+}
+
+// Detailed accounting context for a Commerce finance transaction. The linked
+// Deal/Expense remains the source for sales and profit calculations; this
+// ledger adds optional accounting fields without changing existing imports.
+model FinanceEntry {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entryDate        DateTime  @map("entry_date")
+  cashType         String    @map("cash_type") // Income | Expense | Capital
+  accountingType   String    @map("accounting_type") // salary | cogs | payment | receivable | debt | voucher | owner_capital
+  title            String
+  amount           Float
+  status           String    @default("recorded")
+  counterparty     String?
+  dueDate          DateTime? @map("due_date")
+  voucherNumber    String?   @map("voucher_number")
+  paymentMethod    String?   @map("payment_method")
+  notes            String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey        String?   @map("import_key")
+
+  @@index([userId, entryDate])
+  @@index([deletedAt])
+  @@unique([userId, importKey])
+  @@map("finance_entry")
+}
+
+model ExpenseBudget {
+  id        String          @id @default(cuid())
+  userId    String          @map("user_id")
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category  ExpenseCategory
+  amount    Float
+  year      Int
+  month     Int
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  @@unique([userId, category, year, month])
+  @@index([userId])
+  @@map("expense_budget")
+}
+
+model MarketingMetric {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  metricDate       DateTime  @map("metric_date")
+  channel          String?
+  spend            Float     @default(0)
+  reach            Int?
+  impressions      Int?
+  adDrivenOrders   Int?      @map("ad_driven_orders")
+  note             String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey        String?   @map("import_key")
+
+  @@index([userId, metricDate])
+  @@index([deletedAt])
+  @@unique([userId, importKey])
+  @@map("marketing_metric")
+}
+
+// ─── Q&A Knowledge Base ──────────────────────────────────────────────────────
+
+model QADocument {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  content   String
+  source    String   @default("telegram") // "telegram" | "telegram_file" | "upload"
+  fileType  String? // MIME type e.g. "application/pdf", "image/png"
+  fileName  String? // Original file name
+  senderId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("qa_document")
+}
+
+// ─── Bot Settings (per user) ─────────────────────────────────────────────────
+
+model BotSettings {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  botToken      String?
+  webhookSecret String?  @unique @map("webhook_secret")
+  geminiApiKey  String?
+  geminiModel   String   @default("gemini-3.1-flash-lite-preview")
+  isActive      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("bot_settings")
+}
+
+model ProjectExpiration {
+  id                String    @id @default(cuid())
+  projectName       String    @map("project_name")
+  url               String?
+  packageName       String?   @map("package_name")
+  domainProvider    String?   @map("domain_provider")
+  hostingProvider   String?   @map("hosting_provider")
+  hostingRemark     String?   @map("hosting_remark")
+  domainExpireDate  DateTime? @map("domain_expire_date")
+  hostingExpireDate DateTime? @map("hosting_expire_date")
+  remark            String?
+  uploadedByUserId  String?   @map("uploaded_by_user_id")
+  uploadedBy        User?     @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+  deletedByUserId   String?   @map("deleted_by_user_id")
+  deletedReason     String?   @map("deleted_reason")
+  restoredAt        DateTime? @map("restored_at")
+  restoredByUserId  String?   @map("restored_by_user_id")
+
+  @@index([deletedAt])
+  @@map("project_expiration")
+}
+
+model WebsiteUpdate {
+  id               String    @id @default(cuid())
+  name             String
+  url              String?
+  businessType     String?   @map("business_type")
+  packageName      String?   @map("package_name")
+  status           String    @default("up_to_date") // "up_to_date" | "pending_update" | "in_progress"
+  remark           String?
+  uploadedByUserId String?   @map("uploaded_by_user_id")
+  uploadedBy       User?     @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+
+  @@index([deletedAt])
+  @@map("website_update")
+}
+
+// ─── Business Reports ─────────────────────────────────────────────────────────
+
+model BusinessReport {
+  id               String           @id @default(cuid())
+  reportDate       DateTime         @map("report_date")
+  messageId        String?          @map("message_id")
+  message          TelegramMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  senderId         String?          @map("sender_id")
+  sender           TelegramSender?  @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  uploadedByUserId String?          @map("uploaded_by_user_id")
+  uploadedBy       User?            @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+
+  // Marketing
+  marketingBudget  Float?  @map("marketing_budget")
+  marketingChannel String? @map("marketing_channel") // Facebook | Google | Referral | Walk-in | Telegram | Other
+
+  // Activity
+  callsMade        Int? @map("calls_made")
+  appointmentsMade Int? @map("appointments_made")
+  appointmentsKept Int? @map("appointments_kept")
+  newLeads         Int? @map("new_leads")
+
+  // Sales
+  totalDemandCount Int?   @map("total_demand_count")
+  totalSalesAmount Float? @map("total_sales_amount")
+  closedDeals      Int?   @map("closed_deals")
+  pendingDeals     Int?   @map("pending_deals")
+
+  // Target metrics
+  targetDemandCount  Int?   @map("target_demand_count")
+  targetAppointments Int?   @map("target_appointments")
+  targetSalesAmount  Float? @map("target_sales_amount")
+
+  // Meta
+  notes        String?
+  reporterName String? @map("reporter_name") // display name snapshot
+
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+
+  @@index([reportDate])
+  @@index([deletedAt])
+  @@index([senderId])
+  @@index([messageId])
+  @@index([marketingChannel])
+  @@map("business_report")
+}
+
+model RestoreRequest {
+  id                String    @id @default(cuid())
+  recordType        String    @map("record_type")
+  recordId          String    @map("record_id")
+  requestedByUserId String    @map("requested_by_user_id")
+  status            String    @default("pending")
+  resolvedByUserId  String?   @map("resolved_by_user_id")
+  resolvedAt        DateTime? @map("resolved_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@unique([recordType, recordId, requestedByUserId, status])
+  @@index([recordType, recordId])
+  @@index([requestedByUserId])
+  @@index([status])
+  @@map("restore_request")
+}
+
+model PeriodTarget {
+  id                  String  @id @default(cuid())
+  userId              String? @map("user_id")
+  user                User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  period              String // "month" | "year"
+  year                Int
+  month               Int? // null if period is "year"
+  targetSalesAmount   Float?  @map("target_sales_amount")
+  targetCollectionAmount Float?  @map("target_collection_amount")
+  targetArLimit        Float?  @map("target_ar_limit")
+  targetApLimit        Float?  @map("target_ap_limit")
+  targetExpenseAmount Float?  @map("target_expense_amount")
+  targetDemandCount   Int?    @map("target_demand_count")
+  targetAppointments  Int?    @map("target_appointments")
+  targetNewCustomers  Int?    @map("target_new_customers")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, period, year, month])
+  @@index([userId])
+  @@map("period_targets")
+}
+
+// ─── Pharmacy Distribution (Suppliers, Procurement, Stock, AR, Sales) ──────
+// Source: monthly Purchase Order / Invoice workbooks, Stock snapshots,
+// Receivable sheets, MA EI + Mega sales-detail sheets.
+
+model Supplier {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  nameNormalized   String?
+  creditTermDays   Int?      @map("credit_term_days")
+  dealerCommRate   Float?    @map("dealer_comm_rate")
+  inTimeDiscRate   Float?    @map("in_time_disc_rate")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+
+  purchaseOrders   PurchaseOrder[]
+  purchaseInvoices PurchaseInvoice[]
+
+  @@unique([userId, nameNormalized])
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("supplier")
+}
+
+model PharmaProduct {
+  id                String    @id @default(cuid())
+  userId            String    @map("user_id")
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemCode          String    @map("item_code")
+  itemCodeNormalized String?  @map("item_code_normalized")
+  itemName          String    @map("item_name")
+  principal         String?   // supplier / principal (e.g. ZIFAM-PINNACLE)
+  unitPrice         Float?    @map("unit_price")
+  minQty            Float?    @map("min_qty")    // reorder level (STOCK BY PRICE)
+  maxQty            Float?    @map("max_qty")    // overstock ceiling (STOCK BY PRICE)
+  lowStockThreshold Int       @default(0) @map("low_stock_threshold")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+
+  purchaseOrders   PurchaseOrder[]
+  purchaseInvoices PurchaseInvoice[]
+  stockSnapshots   StockSnapshot[]
+  salesLines       SalesLine[]
+  expiryLots       ExpiryLot[]
+  stockReturns     StockReturn[]
+  stockMovements   StockMovement[]
+
+  @@unique([userId, itemCodeNormalized])
+  @@index([userId])
+  @@index([principal])
+  @@index([deletedAt])
+  @@map("pharma_product")
+}
+
+model PurchaseOrder {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  supplierId      String?   @map("supplier_id")
+  supplier        Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierName    String?   @map("supplier_name")
+  companyName     String?   @map("company_name")
+  assignedStaff   String?   @map("assigned_staff")
+  poNumber        String    @map("po_number")
+  poDate          DateTime? @map("po_date")
+  productId       String?   @map("product_id")
+  product         PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  itemCode        String?   @map("item_code")
+  itemName        String?   @map("item_name")
+  qtyOrdered      Float?    @map("qty_ordered")
+  qtyDelivered    Float?    @map("qty_delivered")
+  focQty          Float?    @map("foc_qty")
+  discountRate    Float?    @map("discount_rate")
+  discountAmount  Float?    @map("discount_amount")
+  unitPrice       Float?    @map("unit_price")
+  netAmount       Float?    @map("net_amount")
+  sourceFileName  String?   @map("source_file_name")
+  sourceSheet     String?   @map("source_sheet")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey       String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, poDate])
+  @@index([supplierId])
+  @@index([productId])
+  @@index([deletedAt])
+  @@map("purchase_order")
+}
+
+model PurchaseInvoice {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  supplierId      String?   @map("supplier_id")
+  supplier        Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierName    String?   @map("supplier_name")
+  companyName     String?   @map("company_name")
+  poNumber        String?   @map("po_number")
+  invoiceNumber   String    @map("invoice_number")
+  creditTermDays  Int?      @map("credit_term_days")
+  invoiceDate     DateTime? @map("invoice_date")
+  arrivalDate     DateTime? @map("arrival_date")
+  dueDate         DateTime? @map("due_date")
+  amount          Float?
+  dealerCommRate  Float?    @map("dealer_comm_rate")
+  dealerCommAmt   Float?    @map("dealer_comm_amt")
+  inTimeDiscRate  Float?    @map("in_time_disc_rate")
+  inTimeDiscAmt   Float?    @map("in_time_disc_amt")
+  taxAmount       Float?    @map("tax_amount")
+  netAmount       Float?    @map("net_amount")
+  creditNote      Float?    @map("credit_note")
+  status          String    @default("unpaid") // unpaid | partial | paid | overdue
+  productId       String?   @map("product_id")
+  product         PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  sourceFileName  String?   @map("source_file_name")
+  sourceSheet     String?   @map("source_sheet")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey       String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, dueDate])
+  @@index([userId, invoiceDate])
+  @@index([userId, status, dueDate])
+  @@index([userId, status, invoiceDate])
+  @@index([supplierId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("purchase_invoice")
+}
+
+model StockSnapshot {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  year           Int
+  month          Int       // 1-12
+  productId      String?   @map("product_id")
+  product        PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  itemCode       String    @map("item_code")
+  itemName       String?   @map("item_name")
+  qty            Float     @default(0)
+  unitPrice      Float?    @map("unit_price")
+  amount         Float?
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  sourceFileName String?   @map("source_file_name")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, year, month])
+  @@index([userId, itemCode])
+  @@index([userId, itemCode, year, month])
+  @@index([productId])
+  @@map("stock_snapshot")
+}
+
+// Per-month iStock movement (JUNE/JULY/AUGUST STOCK files):
+// Opening / Purchase / Sale / Closing per SKU. Drives cover-months,
+// slow-moving and overstock math.
+model StockMovement {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  year           Int
+  month          Int       // 1-12
+  productId      String?   @map("product_id")
+  product        PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  itemCode       String    @map("item_code")
+  itemName       String?   @map("item_name")
+  unit           String?
+  openingQty     Float?    @map("opening_qty")
+  purchaseQty    Float?    @map("purchase_qty")
+  saleQty        Float?    @map("sale_qty")
+  closingQty     Float?    @map("closing_qty")
+  sourceFileName String?   @map("source_file_name")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, year, month])
+  @@index([productId])
+  @@map("stock_movement")
+}
+
+// FIFO expiry lots (Stock Status Exp-Date file): Code / Exp Date / Balance.
+model ExpiryLot {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId      String?   @map("product_id")
+  product        PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  itemCode       String    @map("item_code")
+  itemName       String?   @map("item_name")
+  expDate        DateTime? @map("exp_date")
+  balance        Float?    @default(0)
+  sourceFileName String?   @map("source_file_name")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, expDate])
+  @@index([productId])
+  @@map("expiry_lot")
+}
+
+// Return-in lines (RETURN QTY file): Code / Date / Qty / Amount.
+model StockReturn {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  returnDate     DateTime? @map("return_date")
+  productId      String?   @map("product_id")
+  product        PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  itemCode       String?   @map("item_code")
+  itemName       String?   @map("item_name")
+  qty            Float?    @default(0)
+  unitPrice      Float?    @map("unit_price")
+  amount         Float?
+  sourceFileName String?   @map("source_file_name")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, returnDate])
+  @@index([productId])
+  @@map("stock_return")
+}
+
+// Store-in lots (EXP StoreIn List file): name + batch grain — no item
+// codes, so productId stays null and the expiry tab shows these name-matched
+// with a `storein` source badge.
+model StoreInLot {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemName       String    @map("item_name")
+  batchNo        String?   @map("batch_no")
+  packing        String?
+  qtyOnHand      Float?    @map("qty_on_hand")
+  unitPrice      Float?    @map("unit_price")
+  unitCost       Float?    @map("unit_cost")
+  storeinDate    DateTime? @map("storein_date")
+  mfgDate        DateTime? @map("mfg_date")
+  expDate        DateTime? @map("exp_date")
+  supplierName   String?   @map("supplier_name")
+  sourceFileName String?   @map("source_file_name")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, expDate])
+  @@map("store_in_lot")
+}
+
+model Receivable {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName    String?   @map("company_name")
+  customerName   String?   @map("customer_name")
+  region         String?
+  salesperson    String?
+  invoiceNo      String    @map("invoice_no")
+  invoiceDate    DateTime? @map("invoice_date")
+  dueDate        DateTime? @map("due_date")
+  creditTerms    Int?      @map("credit_terms")
+  amount         Float?
+  returnAmount   Float?    @map("return_amount")
+  netAmount      Float?    @map("net_amount")
+  paidDate       DateTime? @map("paid_date")
+  paymentStatus  String?   @map("payment_status")
+  overdueDays    Int?      @map("overdue_days")
+  bank           String?
+  sourceFileName String?   @map("source_file_name")
+  sourceSheet    String?   @map("source_sheet")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, dueDate])
+  @@index([userId, paymentStatus, dueDate])
+  @@index([userId, paymentStatus, invoiceDate])
+  @@index([userId, paymentStatus, overdueDays])
+  @@index([userId, paidDate])
+  @@index([paymentStatus])
+  @@index([overdueDays])
+  @@index([deletedAt])
+  @@map("receivable")
+}
+
+model SalesLine {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel        String    // MAEI | MEGA
+  saleDate       DateTime? @map("sale_date")
+  customerName   String?   @map("customer_name")
+  refNo          String?   @map("ref_no")
+  productId      String?   @map("product_id")
+  product        PharmaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  itemCode       String?   @map("item_code")
+  itemName       String?   @map("item_name")
+  saleQty        Float?    @map("sale_qty")
+  focQty         Float?    @map("foc_qty")
+  returnQty      Float?    @map("return_qty")
+  unitPrice      Float?    @map("unit_price")
+  amount         Float?
+  discountRate   Float?    @map("discount_rate")
+  principal      String?
+  tspArea        String?   @map("tsp_area")
+  sourceFileName String?   @map("source_file_name")
+  sourceSheet    String?   @map("source_sheet")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+  deletedByUserId  String?   @map("deleted_by_user_id")
+  deletedReason    String?   @map("deleted_reason")
+  restoredAt       DateTime? @map("restored_at")
+  restoredByUserId String?   @map("restored_by_user_id")
+  importKey      String?   @map("import_key")
+
+  @@unique([userId, importKey])
+  @@index([userId, saleDate])
+  @@index([userId, deletedAt, saleDate])
+  @@index([channel])
+  @@index([productId])
+  @@index([principal])
+  @@index([deletedAt])
+  @@map("sales_line")
+}
