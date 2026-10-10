@@ -440,10 +440,8 @@ function TelegramSendersList() {
   };
 
   const DEPARTMENTS = [
-    { key: 'Sales', label: 'Sales & Marketing', desc: 'Allows submitting Sales & Marketing records' },
-    { key: 'IT', label: 'IT & Projects', desc: 'Allows submitting Project Expiries & Website Updates' },
-    { key: 'Finance', label: 'Finance & Operations', desc: 'Allows submitting Finance records and Business KPI reports' },
-    { key: 'QA', label: 'QA / Support', desc: 'Allows asking questions to Gemini AI chatbot' },
+    { key: 'Pharmacy', label: 'Pharmacy Operations', desc: 'Allows importing pharmacy workbooks through Telegram' },
+    { key: 'QA', label: 'Pharmacy Q&A', desc: 'Allows asking Gemini about pharmacy sales, stock, AR, payables, and expiry' },
   ];
 
   return (

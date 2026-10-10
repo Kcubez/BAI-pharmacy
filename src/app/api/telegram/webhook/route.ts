@@ -42,9 +42,10 @@ import {
   type FinanceRecord,
 } from "@/lib/finance-import";
 import { fingerprintImportRows, sha256Hex } from "@/lib/data-import";
-import { publishEvent } from "@/lib/upstash";
+import { importPharmacyWorkbook } from "@/lib/pharmacy-import";
+import { bumpCacheVersion, publishEvent } from "@/lib/upstash";
 
-const COMMERCE_REPORT_MODES = ["demand_report", "customer_service", "finance_transactions", "inventory_import", "marketing_import"] as const;
+const COMMERCE_REPORT_MODES = ["pharmacy_import"] as const;
 
 function isCommerceReportMode(mode: string | null | undefined) {
   return !!mode && COMMERCE_REPORT_MODES.includes(mode as (typeof COMMERCE_REPORT_MODES)[number]);
@@ -320,9 +321,8 @@ async function upsertSender(from: {
 
 const MAIN_MENU_BUTTONS = {
   inline_keyboard: [
-    [{ text: "🤖 Q&A မေးမြန်း", callback_data: "mode:qa" }, { text: "📈 Sales Orders", callback_data: "mode:demand_report" }],
-    [{ text: "🎧 Customer Service", callback_data: "mode:customer_service" }, { text: "💳 Finance Transactions", callback_data: "mode:finance_transactions" }],
-    [{ text: "📦 Inventory / Products", callback_data: "mode:inventory_import" }, { text: "📣 Marketing Metrics", callback_data: "mode:marketing_import" }],
+    [{ text: "🤖 Pharmacy Q&A", callback_data: "mode:qa" }],
+    [{ text: "💊 Pharmacy Workbooks", callback_data: "mode:pharmacy_import" }],
   ],
 };
 
@@ -391,6 +391,8 @@ function getPlainTemplateTextForMode(mode: string | null | undefined): string {
         "Ad-driven Orders:",
         "Notes:",
       ].join("\n");
+    case 'pharmacy_import':
+      return "Upload the original pharmacy workbook (.xlsx, .xls, or .csv). Keep its existing sheet names and headers.";
     case 'demand_report':
     default:
       return [
@@ -404,6 +406,24 @@ function getPlainTemplateTextForMode(mode: string | null | undefined): string {
         "Note:",
       ].join("\n");
   }
+}
+
+function getPharmacyImportFormatPrompt() {
+  return [
+    "💊 ━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "  <b>Pharmacy Workbook Import</b>",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "Pharmacy dashboard အတွက် original Excel file ကို တိုက်ရိုက်ပို့ပါ။",
+    "",
+    "✅ <b>Supported:</b> Purchase Order / Invoice, Sales Detail, Receivable, Stock, Min-Max, Expiry, Return နှင့် Store-in workbooks",
+    "",
+    "💡 <i>File name ထဲမှာ month/year ပါလျှင် stock period ကို အလိုအလျောက် သိမ်းပေးမည်။ ဖိုင်ကို format မပြောင်းဘဲ ပို့ပါ။</i>",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━",
+  ].join("\n");
 }
 
 function buildFormatInlineButtons(mode: string | null | undefined) {
@@ -421,26 +441,16 @@ function buildMainMenuButtons(allowedDepartments: string[]) {
   const buttons: { text: string; callback_data: string }[][] = [];
   const row1: { text: string; callback_data: string }[] = [];
   const row2: { text: string; callback_data: string }[] = [];
-  const row3: { text: string; callback_data: string }[] = [];
-  const row4: { text: string; callback_data: string }[] = [];
 
   if (allowedDepartments.includes('QA')) {
-    row1.push({ text: "🤖 Q&A မေးမြန်း", callback_data: "mode:qa" });
+    row1.push({ text: "🤖 Pharmacy Q&A", callback_data: "mode:qa" });
   }
-  if (allowedDepartments.includes('Sales')) {
-    row1.push({ text: "📈 Sales Orders", callback_data: "mode:demand_report" });
-    row2.push({ text: "🎧 Customer Service", callback_data: "mode:customer_service" });
-    row3.push({ text: "📦 Inventory / Products", callback_data: "mode:inventory_import" });
-    row4.push({ text: "📣 Marketing Metrics", callback_data: "mode:marketing_import" });
-  }
-  if (allowedDepartments.includes('Finance')) {
-    row2.push({ text: "💳 Finance Transactions", callback_data: "mode:finance_transactions" });
+  if (allowedDepartments.includes('Pharmacy')) {
+    row2.push({ text: "💊 Pharmacy Workbooks", callback_data: "mode:pharmacy_import" });
   }
 
   if (row1.length) buttons.push(row1);
   if (row2.length) buttons.push(row2);
-  if (row3.length) buttons.push(row3);
-  if (row4.length) buttons.push(row4);
 
   return { inline_keyboard: buttons };
 }
@@ -448,6 +458,7 @@ function buildMainMenuButtons(allowedDepartments: string[]) {
 function getDepartmentForMode(mode: string): string | null {
   if (mode === 'demand_report' || mode === 'customer_service' || mode === 'inventory_import' || mode === 'marketing_import') return 'Sales';
   if (mode === 'finance_transactions') return 'Finance';
+  if (mode === 'pharmacy_import') return 'Pharmacy';
   if (mode === 'qa') return 'QA';
   return null;
 }
@@ -455,6 +466,7 @@ function getDepartmentForMode(mode: string): string | null {
 function getDepartmentNameBurmese(dep: string): string {
   if (dep === 'Sales') return 'Sales & Marketing (အရောင်းနှင့်စျေးကွက်)';
   if (dep === 'Finance') return 'Finance & Operations (ဘဏ္ဍာရေးနှင့် လုပ်ငန်းဆောင်ရွက်မှု)';
+  if (dep === 'Pharmacy') return 'Pharmacy Operations (ဆေးဆိုင် လုပ်ငန်းဆောင်ရွက်မှု)';
   if (dep === 'QA') return 'QA / Support (အမေးအဖြေ)';
   return dep;
 }
@@ -748,6 +760,8 @@ function getFormatPromptForMode(mode: string | null | undefined): string {
       return getInventoryImportFormatPrompt();
     case 'marketing_import':
       return getMarketingImportFormatPrompt();
+    case 'pharmacy_import':
+      return getPharmacyImportFormatPrompt();
     default:
       return [
         "🤖 ━━━━━━━━━━━━━━━━━━━━",
@@ -780,6 +794,8 @@ function getFormatHintFooter(mode: string): string {
     fields = "Product Code • Product Name • Category • Unit Cost • Selling Price • Stock Qty • Low Stock Threshold";
   } else if (mode === 'marketing_import') {
     fields = "Date • Channel • Spend • Reach • Impressions • Ad-driven Orders • Notes";
+  } else if (mode === 'pharmacy_import') {
+    fields = "Original pharmacy workbook (.xlsx, .xls, or .csv)";
   }
   return [
     "",
@@ -864,6 +880,8 @@ function getCopyPasteTemplateForMode(mode: string | null | undefined): string {
         "စာသားပုံစံအတွက် ဖိနှိပ်၍ Copy ကူးယူပါ -",
         "<code>• Date: \n• Channel: \n• Spend: \n• Reach: \n• Impressions: \n• Ad-driven Orders: \n• Notes: </code>",
       ].join("\n");
+    case 'pharmacy_import':
+      return getPharmacyImportFormatPrompt();
     default:
       return [
         "🤖 ━━━━━━━━━━━━━━━━━━━━",
@@ -883,7 +901,7 @@ async function buildQAContext(ownerUserId: string): Promise<string> {
   // filter and mix every tenant's data into the AI prompt. Never do that.
   if (!ownerUserId) return "";
   const ownerWhere = { userId: ownerUserId };
-  const [demandRecords, qaDocs, customers, deals, products, expenses, marketingMetrics] = await Promise.all([
+  const [demandRecords, qaDocs, customers, deals, products, expenses, marketingMetrics, pharmaProducts, stockSnapshots, purchaseInvoices, receivables, salesLines, expiryLots] = await Promise.all([
     prisma.demandRecord.findMany({
       where: { sender: { userId: ownerUserId }, ...notDeleted },
       orderBy: { createdAt: 'desc' },
@@ -919,6 +937,36 @@ async function buildQAContext(ownerUserId: string): Promise<string> {
     prisma.marketingMetric.findMany({
       where: { ...ownerWhere, ...notDeleted },
       orderBy: { metricDate: 'desc' },
+      take: 20,
+    }),
+    prisma.pharmaProduct.findMany({
+      where: { userId: ownerUserId, ...notDeleted },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    }),
+    prisma.stockSnapshot.findMany({
+      where: { userId: ownerUserId, ...notDeleted },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }, { updatedAt: 'desc' }],
+      take: 30,
+    }),
+    prisma.purchaseInvoice.findMany({
+      where: { userId: ownerUserId, ...notDeleted },
+      orderBy: { dueDate: 'asc' },
+      take: 20,
+    }),
+    prisma.receivable.findMany({
+      where: { userId: ownerUserId, ...notDeleted },
+      orderBy: { overdueDays: 'desc' },
+      take: 20,
+    }),
+    prisma.salesLine.findMany({
+      where: { userId: ownerUserId, ...notDeleted },
+      orderBy: { saleDate: 'desc' },
+      take: 30,
+    }),
+    prisma.expiryLot.findMany({
+      where: { userId: ownerUserId, ...notDeleted, expDate: { not: null } },
+      orderBy: { expDate: 'asc' },
       take: 20,
     }),
   ]);
@@ -987,6 +1035,48 @@ async function buildQAContext(ownerUserId: string): Promise<string> {
     parts.push('\n=== MARKETING METRICS ===');
     for (const metric of marketingMetrics) {
       parts.push(`${metric.metricDate.toISOString().slice(0, 10)} — ${metric.channel || 'Marketing'} spend ${metric.spend.toLocaleString()} MMK, reach ${metric.reach ?? '—'}, ad orders ${metric.adDrivenOrders ?? '—'}`);
+    }
+  }
+
+  if (pharmaProducts.length > 0) {
+    parts.push('\n=== PHARMACY PRODUCT LEVELS ===');
+    for (const product of pharmaProducts) {
+      parts.push(`${product.itemName} (${product.itemCode}) — principal ${product.principal ?? '—'}, min/max ${product.minQty ?? '—'}/${product.maxQty ?? '—'}`);
+    }
+  }
+
+  if (stockSnapshots.length > 0) {
+    parts.push('\n=== LATEST PHARMACY STOCK SNAPSHOTS ===');
+    for (const stock of stockSnapshots) {
+      parts.push(`${stock.year}-${String(stock.month).padStart(2, '0')} ${stock.itemName ?? stock.itemCode} (${stock.itemCode}) — qty ${stock.qty}, value ${stock.amount ?? '—'} MMK`);
+    }
+  }
+
+  if (purchaseInvoices.length > 0) {
+    parts.push('\n=== SUPPLIER PAYABLES ===');
+    for (const invoice of purchaseInvoices) {
+      parts.push(`${invoice.supplierName ?? 'Unknown supplier'} — invoice ${invoice.invoiceNumber}, ${invoice.status}, due ${invoice.dueDate?.toISOString().slice(0, 10) ?? '—'}, net ${invoice.netAmount ?? invoice.amount ?? 0} MMK`);
+    }
+  }
+
+  if (receivables.length > 0) {
+    parts.push('\n=== CUSTOMER RECEIVABLES ===');
+    for (const receivable of receivables) {
+      parts.push(`${receivable.customerName ?? receivable.companyName ?? 'Unknown customer'} — invoice ${receivable.invoiceNo}, ${receivable.paymentStatus ?? 'open'}, overdue ${receivable.overdueDays ?? 0} days, net ${receivable.netAmount ?? receivable.amount ?? 0} MMK`);
+    }
+  }
+
+  if (salesLines.length > 0) {
+    parts.push('\n=== RECENT PHARMACY SALES ===');
+    for (const sale of salesLines) {
+      parts.push(`${sale.saleDate?.toISOString().slice(0, 10) ?? '—'} ${sale.itemName ?? sale.itemCode ?? 'Unknown item'} — qty ${sale.saleQty ?? 0}, amount ${sale.amount ?? 0} MMK, channel ${sale.channel}`);
+    }
+  }
+
+  if (expiryLots.length > 0) {
+    parts.push('\n=== PHARMACY EXPIRY LOTS ===');
+    for (const lot of expiryLots) {
+      parts.push(`${lot.itemName ?? lot.itemCode} (${lot.itemCode}) — expiry ${lot.expDate?.toISOString().slice(0, 10) ?? '—'}, balance ${lot.balance ?? 0}`);
     }
   }
 
@@ -1320,6 +1410,47 @@ async function processFileInBackground({
     fileInfo.fileName.endsWith(".csv");
 
   try {
+    if (activeMode === "pharmacy_import") {
+      if (!isSpreadsheet) {
+        await sendOrEditMessage({
+          botToken: settings.botToken,
+          chatId,
+          progressMsgId,
+          text: "⚠️ <b>Pharmacy Import အတွက် Excel/CSV ဖိုင်သာ ပို့ပေးပါ။</b>",
+        });
+        return;
+      }
+      if (!settings.userId) {
+        throw new Error("Pharmacy file import requires a linked business owner user.");
+      }
+
+      const summaries = await importPharmacyWorkbook(settings.userId, downloadedBuffer, fileInfo.fileName, {
+        asOf: new Date(),
+      });
+      const created = summaries.reduce((total, summary) => total + summary.created, 0);
+      const updated = summaries.reduce((total, summary) => total + summary.updated, 0);
+      const skipped = summaries.reduce((total, summary) => total + summary.skipped, 0);
+      const errors = summaries.reduce((total, summary) => total + summary.errors.length, 0);
+
+      await bumpCacheVersion("pharmacy", settings.userId);
+      await publishEvent(settings.userId, "pharmacy");
+      await sendOrEditMessage({
+        botToken: settings.botToken,
+        chatId,
+        progressMsgId,
+        text: [
+          "✅ <b>Pharmacy workbook import ပြီးပါပြီ</b>",
+          "━━━━━━━━━━━━━━━━━━━━",
+          `📄 <b>ဖိုင်အမည်:</b> <code>${escapeHtml(fileInfo.fileName)}</code>`,
+          `➕ အသစ်ထည့်သွင်း: <b>${created}</b>`,
+          `🔄 Update: <b>${updated}</b>`,
+          `⏭️ Skip: <b>${skipped}</b>`,
+          ...(errors > 0 ? [`⚠️ Error rows: <b>${errors}</b>`] : []),
+        ].join("\n"),
+      });
+      return;
+    }
+
     type ImportKind = 'finance' | 'product_catalog' | 'marketing_metrics' | 'sales_orders' | 'customer_service';
     let importKind: ImportKind | null = null;
     let parsedFinanceRecords: FinanceRecord[] = [];
@@ -1759,14 +1890,14 @@ export async function POST(req: NextRequest) {
               "",
               "━━━━━━━━━━━━━━━━━━━━",
               "",
-              "Gemini AI မှ လုပ်ငန်းဒေတာကို",
+              "Gemini AI မှ Pharmacy data ကို",
               "အခြေခံ၍ ဖြေကြားပေးမည်။",
               "",
               "💬 <b>ဥပမာများ:</b>",
               "",
-              "  • <i>ဒီလမှာ အရောင်းရငွေ ဘယ်လောက်ရှိလဲ?</i>",
-              "  • <i>ပြတ်နေတဲ့ ပစ္စည်း ဘာတွေရှိလဲ?</i>",
-              "  • <i>Follow-up လုပ်ရမယ့် customer ရှိလား?</i>",
+              "  • <i>ဘယ်ပစ္စည်းတွေ reorder လုပ်သင့်လဲ?</i>",
+              "  • <i>Overdue receivable အများဆုံး customer ဘယ်သူလဲ?</i>",
+              "  • <i>မကြာခင် expiry ဖြစ်မယ့် stock ဘာတွေရှိလဲ?</i>",
               "",
               "━━━━━━━━━━━━━━━━━━━━",
             ].join("\n"),
@@ -1865,6 +1996,24 @@ export async function POST(req: NextRequest) {
             messageId,
             text: getMarketingImportFormatPrompt(),
             replyMarkup: buildFormatInlineButtons('marketing_import'),
+          });
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      if (data === 'mode:pharmacy_import') {
+        await prisma.telegramSender.update({
+          where: { id: sender.id },
+          data: { activeReportType: 'pharmacy_import' },
+        });
+        await answerCallbackQuery(settings?.botToken, callbackQuery.id, '✅ Pharmacy Workbooks selected');
+        if (chatId && messageId) {
+          await editTelegramMessage({
+            botToken: settings?.botToken,
+            chatId: BigInt(chatId),
+            messageId,
+            text: getPharmacyImportFormatPrompt(),
+            replyMarkup: buildFormatInlineButtons('pharmacy_import'),
           });
         }
         return NextResponse.json({ ok: true });
