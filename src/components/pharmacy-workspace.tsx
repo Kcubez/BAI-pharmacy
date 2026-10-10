@@ -651,7 +651,7 @@ function SalesView() {
               <div className="w-8 h-8 rounded-full bg-sky-100 dark:bg-sky-900/30 flex items-center justify-center"><Users className="text-sky-500 w-4 h-4" /></div>
               <h3 className="font-bold text-foreground">Top Customers</h3>
             </div>
-            <div className="overflow-x-auto">
+            <div>
               <Table>
                 <TableHeader><TableRow className="uppercase text-[10px] font-extrabold tracking-wider"><TableHead>Customer</TableHead><TableHead className="text-right">Amount (MMK)</TableHead><TableHead className="text-right">Lines</TableHead></TableRow></TableHeader>
                 <TableBody>
@@ -908,12 +908,12 @@ function InventoryView() {
                 <p className="text-xs text-muted-foreground">{tabMeta[tab].desc}</p>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div>
               {isExpiryTab ? (
                 <VirtualTable<ExpiryRow>
                   rows={expiryRows}
                   rowHeight={44}
-                  height={520}
+                  height={Math.min(520, Math.max(132, expiryRows.length * 44))}
                   keyOf={(r) => `${r.source ?? "lot"}-${r.itemCode}-${r.itemName}-${r.expDate}`}
                   columns={[
                     { key: "code", header: "Code / Batch", width: "150px", cell: (r) => <span className="font-mono text-xs">{r.source === "storein" ? (r.batchNo ?? "—") : r.itemCode}</span> },
@@ -947,7 +947,7 @@ function InventoryView() {
               <VirtualTable<PharmacyInventoryRow>
                 rows={rows}
                 rowHeight={44}
-                height={520}
+                height={Math.min(520, Math.max(132, rows.length * 44))}
                 keyOf={(r) => r.itemCode}
                 columns={[
                   { key: "code", header: "Code", width: "130px", cell: (r) => <span className="font-mono text-xs">{r.itemCode}</span> },
@@ -1018,11 +1018,16 @@ function PayablesView() {
   const periodKey = filterToPeriodKey(filter);
   const [page, setPage] = useQueryState("ap-page", parseAsInteger.withDefault(1));
   const [limit, setLimit] = useQueryState("ap-limit", parseAsInteger.withDefault(10));
+  const [supplierPage, setSupplierPage] = useQueryState("ap-supplier-page", parseAsInteger.withDefault(1));
+  const [supplierLimit, setSupplierLimit] = useQueryState("ap-supplier-limit", parseAsInteger.withDefault(10));
   const [search, setSearch] = useQueryState("ap-q", parseAsString.withDefault(""));
   const dq = useDebounce(search);
   const q = usePharmacyPayables(periodKey, page, limit, dq, filter.isReady);
   const d = q.data;
   const suppliers = d?.bySupplier ?? [];
+  const supplierTotalPages = Math.max(1, Math.ceil(suppliers.length / supplierLimit));
+  const safeSupplierPage = Math.min(Math.max(1, supplierPage), supplierTotalPages);
+  const pagedSuppliers = suppliers.slice((safeSupplierPage - 1) * supplierLimit, safeSupplierPage * supplierLimit);
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -1055,16 +1060,16 @@ function PayablesView() {
                 <Input
                   placeholder="Search supplier…"
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => { setSearch(e.target.value); setSupplierPage(1); }}
                   className="h-8 w-52 text-xs"
                 />
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div>
               <Table>
                 <TableHeader><TableRow className="uppercase text-[10px] font-extrabold tracking-wider"><TableHead>Supplier</TableHead><TableHead className="text-right">Outstanding (MMK)</TableHead><TableHead className="text-right">Overdue</TableHead><TableHead className="text-right">Due Soon</TableHead><TableHead className="text-right">Disc. at Risk</TableHead><TableHead className="text-right">Invoices</TableHead></TableRow></TableHeader>
                 <TableBody>
-                  {suppliers.map((r) => (
+                  {pagedSuppliers.map((r) => (
                     <TableRow key={r.supplier} className="hover:bg-muted/30 transition">
                       <TableCell className="font-bold">{r.supplier}</TableCell>
                       <TableCell className="text-right font-extrabold text-sky-600 dark:text-sky-400">{mmk(r.outstanding)}</TableCell>
@@ -1084,6 +1089,15 @@ function PayablesView() {
                 </TableBody>
               </Table>
             </div>
+            {suppliers.length > 0 && (
+              <TablePager
+                page={safeSupplierPage}
+                limit={supplierLimit}
+                total={suppliers.length}
+                onPage={(p) => setSupplierPage(p)}
+                onLimit={(l) => { setSupplierLimit(l); setSupplierPage(1); }}
+              />
+            )}
           </section>
           <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
             <div className="flex items-center gap-3 mb-4 border-b-2 border-border pb-3">
@@ -1093,7 +1107,7 @@ function PayablesView() {
                 <p className="text-xs text-muted-foreground">overdue + discount-at-risk score</p>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div>
               <div className="min-h-[200px]">
                 <Table>
                   <TableHeader><TableRow className="uppercase text-[10px] font-extrabold tracking-wider"><TableHead>Supplier</TableHead><TableHead>Invoice</TableHead><TableHead className="text-right">Amount (MMK)</TableHead><TableHead className="text-right">Status</TableHead><TableHead>Due Date</TableHead></TableRow></TableHeader>
