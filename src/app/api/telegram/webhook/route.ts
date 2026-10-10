@@ -307,7 +307,7 @@ async function upsertSender(from: {
     });
   }
 
-  return prisma.telegramSender.update({
+  const updatedSender = await prisma.telegramSender.update({
     where: { id: existing.id },
     data: {
       firstName: from.first_name || "Unknown",
@@ -317,6 +317,34 @@ async function upsertSender(from: {
       ...(ownerUserId ? { userId: ownerUserId } : {}),
     },
   });
+
+  // Repair records created by the former OTP lookup: it could verify the
+  // active Telegram record before merging the matching pre-registration,
+  // leaving an unlinked duplicate behind. Only reconcile already-verified
+  // accounts, so the normal email/OTP flow still owns first-time linking.
+  if (updatedSender.isVerified && updatedSender.email && ownerUserId) {
+    const placeholder = await prisma.telegramSender.findFirst({
+      where: {
+        userId: ownerUserId,
+        email: updatedSender.email,
+        telegramUserId: null,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (placeholder) {
+      const reconciled = await prisma.telegramSender.update({
+        where: { id: updatedSender.id },
+        data: {
+          isAuthorized: placeholder.isAuthorized,
+          allowedDepartments: placeholder.allowedDepartments,
+        },
+      });
+      await prisma.telegramSender.delete({ where: { id: placeholder.id } });
+      return reconciled;
+    }
+  }
+
+  return updatedSender;
 }
 
 const MAIN_MENU_BUTTONS = {
@@ -2195,18 +2223,16 @@ export async function POST(req: NextRequest) {
 
         const normalizedEmail = email.toLowerCase().trim();
 
-        // Find a pre-registered TelegramSender where either:
-        // 1. email matches and telegramUserId is NULL
-        // 2. email matches and telegramUserId matches the sender's telegramUserId
+        // Only an unlinked pre-registration can authorize a new Telegram
+        // account. Matching the active sender here caused the OTP merge to
+        // select itself and leave the placeholder record behind.
         const preRegisteredSender = await prisma.telegramSender.findFirst({
           where: {
             userId: settings.userId,
             email: normalizedEmail,
-            OR: [
-              { telegramUserId: null },
-              { telegramUserId: sender.telegramUserId },
-            ],
+            telegramUserId: null,
           },
+          orderBy: { createdAt: 'asc' },
         });
 
         if (!preRegisteredSender) {
@@ -2338,11 +2364,9 @@ export async function POST(req: NextRequest) {
           where: {
             userId: settings.userId,
             email: sender.email,
-            OR: [
-              { telegramUserId: null },
-              { telegramUserId: sender.telegramUserId },
-            ],
+            telegramUserId: null,
           },
+          orderBy: { createdAt: 'asc' },
         });
 
         if (preRegistered) {
@@ -2386,6 +2410,23 @@ export async function POST(req: NextRequest) {
               },
             });
           }
+        } else {
+          await sendTelegramMessage({
+            botToken: settings?.botToken,
+            chatId,
+            text: [
+              "❌ ━━━━━━━━━━━━━━━━━━━━",
+              "",
+              "  <b>ဝင်ရောက်ခွင့် အတည်ပြုမရပါ</b>",
+              "",
+              "━━━━━━━━━━━━━━━━━━━━",
+              "",
+              "Staff Bot Access မှာ ကြိုတင်စာရင်းသွင်းထားသော email ကို မတွေ့ပါ။",
+              "Business Owner အား ဆက်သွယ်ပေးပါ။",
+            ].join("\n"),
+            replyMarkup: KEYBOARD_UNLINKED,
+          });
+          return NextResponse.json({ ok: true });
         }
 
         await sendTelegramMessage({
