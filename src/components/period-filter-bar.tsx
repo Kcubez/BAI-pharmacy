@@ -85,11 +85,6 @@ export function PeriodFilterBar({ filter, action, isLoading = false }: { filter:
         </Select>
       )}
       {action}
-      {busy && (
-        <span className="pointer-events-none absolute -bottom-1 left-1 right-1 h-0.5 overflow-hidden rounded-full bg-primary/15" role="progressbar" aria-label="Refreshing filtered data">
-          <span className="block h-full w-2/5 rounded-full bg-primary motion-safe:animate-[filter-progress_1.1s_ease-in-out_infinite]" />
-        </span>
-      )}
     </fieldset>
   );
 }

@@ -46,7 +46,9 @@ export async function POST(req: NextRequest) {
     await back("stockSnapshots", () => prisma.stockSnapshot.updateMany({ where: { userId, ...onlyDeleted }, data }));
     await back("stockMovements", () => prisma.stockMovement.updateMany({ where: { userId, ...onlyDeleted }, data }));
   }
-  if (scope === "levels" || scope === "all") {
+  // Keep restore symmetrical with the Inventory delete action: expiry and
+  // related inventory rows are restored together with stock snapshots.
+  if (scope === "stock" || scope === "levels" || scope === "all") {
     await back("expiryLots", () => prisma.expiryLot.updateMany({ where: { userId, ...onlyDeleted }, data }));
     await back("stockReturns", () => prisma.stockReturn.updateMany({ where: { userId, ...onlyDeleted }, data }));
     await back("storeInLots", () => prisma.storeInLot.updateMany({ where: { userId, ...onlyDeleted }, data }));

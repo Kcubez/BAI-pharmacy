@@ -862,7 +862,7 @@ function InventoryView() {
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Stock position, sales velocity and expiry exposure as of the selected period.</p>
         </div>
         <div className="workspace-filter flex flex-wrap items-center gap-2">
-          <PeriodFilterBar filter={filter} isLoading={q.isFetching && !q.isPending} action={<ScopedDeleteButton scope="stock" label="stock history" />} />
+          <PeriodFilterBar filter={filter} isLoading={q.isFetching && !q.isPending} action={<ScopedDeleteButton scope="stock" label="inventory data" />} />
         </div>
       </div>
       {q.isPending && <Loading />}

@@ -54,7 +54,10 @@ export async function DELETE(req: NextRequest) {
     await wipe("stockSnapshots", () => prisma.stockSnapshot.updateMany({ where: { userId, ...notDeleted }, data }));
     await wipe("stockMovements", () => prisma.stockMovement.updateMany({ where: { userId, ...notDeleted }, data }));
   }
-  if (scope === "levels" || scope === "all") {
+  // Expiry, store-in, returns, and Min/Max all influence the Inventory page.
+  // They must be cleared with stock data; otherwise the expiry KPI can retain
+  // stale counts after the snapshots have been deleted.
+  if (scope === "stock" || scope === "levels" || scope === "all") {
     await wipe("expiryLots", () => prisma.expiryLot.updateMany({ where: { userId, ...notDeleted }, data }));
     await wipe("stockReturns", () => prisma.stockReturn.updateMany({ where: { userId, ...notDeleted }, data }));
     await wipe("storeInLots", () => prisma.storeInLot.updateMany({ where: { userId, ...notDeleted }, data }));

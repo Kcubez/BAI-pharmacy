@@ -27,6 +27,7 @@ export function upstash(): Redis | null {
 // ─── Cached fetch ────────────────────────────────────────────────────────────
 
 const VERSION_PREFIX = "bai:ver";
+const CACHE_REQUEST_TIMEOUT_MS = 750;
 
 type LocalCacheEntry = { expiresAt: number; data: unknown };
 type LocalCacheStore = {
@@ -49,11 +50,60 @@ function localCacheKey(scope: string, userId: string, key: string) {
   return `${scope}:${userId}:${key}`;
 }
 
-async function versionOf(scope: string, userId: string): Promise<number> {
+/** Never let an optional remote cache delay a dashboard response. */
+function cacheRequest<T>(operation: Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Cache request timed out")),
+      CACHE_REQUEST_TIMEOUT_MS,
+    );
+    operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function versionOf(scope: string, userId: string): Promise<number | null> {
   const r = upstash();
   if (!r) return 0;
-  const v = await r.get<number>(`${VERSION_PREFIX}:${scope}:${userId}`);
-  return typeof v === "number" ? v : 0;
+  try {
+    const v = await cacheRequest(r.get<number>(`${VERSION_PREFIX}:${scope}:${userId}`));
+    return typeof v === "number" ? v : 0;
+  } catch {
+    return null;
+  }
+}
+
+async function cachedLocally<T>(
+  scope: string,
+  userId: string,
+  key: string,
+  ttlSec: number,
+  fetcher: () => Promise<T>,
+): Promise<{ data: T; hit: boolean }> {
+  const cacheKey = localCacheKey(scope, userId, key);
+  const existing = localCache.entries.get(cacheKey);
+  if (existing && existing.expiresAt > Date.now()) return { data: existing.data as T, hit: true };
+
+  const pending = localCache.inFlight.get(cacheKey) as Promise<T> | undefined;
+  if (pending) return { data: await pending, hit: true };
+
+  const work = fetcher();
+  localCache.inFlight.set(cacheKey, work);
+  try {
+    const data = await work;
+    localCache.entries.set(cacheKey, { data, expiresAt: Date.now() + ttlSec * 1000 });
+    return { data, hit: false };
+  } finally {
+    localCache.inFlight.delete(cacheKey);
+  }
 }
 
 export async function bumpCacheVersion(scope: string, userId: string): Promise<void> {
@@ -77,35 +127,20 @@ export async function cached<T>(
   fetcher: () => Promise<T>,
 ): Promise<{ data: T; hit: boolean }> {
   const r = upstash();
-  if (!r) {
-    const cacheKey = localCacheKey(scope, userId, key);
-    const existing = localCache.entries.get(cacheKey);
-    if (existing && existing.expiresAt > Date.now()) return { data: existing.data as T, hit: true };
+  if (!r) return cachedLocally(scope, userId, key, ttlSec, fetcher);
 
-    const pending = localCache.inFlight.get(cacheKey) as Promise<T> | undefined;
-    if (pending) return { data: await pending, hit: true };
-
-    const work = fetcher();
-    localCache.inFlight.set(cacheKey, work);
-    try {
-      const data = await work;
-      localCache.entries.set(cacheKey, { data, expiresAt: Date.now() + ttlSec * 1000 });
-      return { data, hit: false };
-    } finally {
-      localCache.inFlight.delete(cacheKey);
-    }
-  }
   const ver = await versionOf(scope, userId);
+  if (ver === null) return cachedLocally(scope, userId, key, ttlSec, fetcher);
   const cacheKey = `bai:cache:${scope}:${userId}:v${ver}:${key}`;
   try {
-    const hit = await r.get<T>(cacheKey);
+    const hit = await cacheRequest(r.get<T>(cacheKey));
     if (hit !== null && hit !== undefined) return { data: hit, hit: true };
   } catch {
     // Cache read failure must never break the request.
   }
   const data = await fetcher();
   try {
-    await r.set(cacheKey, data, { ex: ttlSec });
+    await cacheRequest(r.set(cacheKey, data, { ex: ttlSec }));
   } catch {
     // ignore write failures
   }
