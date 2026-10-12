@@ -1,11 +1,11 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { marketingMetricsApi } from "@/lib/api";
+import { marketingMetricsApi, type MarketingMetricsParams } from "@/lib/api";
 
 export const marketingMetricKeys = {
   all: ["marketing-metrics"] as const,
-  list: (params: { dateFrom?: string; dateTo?: string } = {}) =>
+  list: (params: MarketingMetricsParams = {}) =>
     [...marketingMetricKeys.all, params] as const,
 };
 
@@ -14,10 +14,10 @@ export const marketingMetricKeys = {
  * Same resilience rationale as useDeals: retries + a real error state
  * instead of a silent empty table.
  */
-export function useMarketingMetrics(params: { dateFrom?: string; dateTo?: string } = {}) {
-  const { dateFrom, dateTo } = params;
+export function useMarketingMetrics(params: MarketingMetricsParams = {}) {
+  const { dateFrom, dateTo, page, limit } = params;
   return useQuery({
-    queryKey: marketingMetricKeys.list({ dateFrom, dateTo }),
-    queryFn: () => marketingMetricsApi.list({ dateFrom, dateTo }),
+    queryKey: marketingMetricKeys.list({ dateFrom, dateTo, page, limit }),
+    queryFn: () => marketingMetricsApi.list({ dateFrom, dateTo, page, limit }),
   });
 }

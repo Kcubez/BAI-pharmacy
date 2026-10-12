@@ -4,6 +4,7 @@
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
+  previewFeatures = ["typedSql"]
 }
 
 datasource db {
@@ -923,6 +924,7 @@ model StockSnapshot {
   @@index([userId, year, month])
   @@index([userId, itemCode])
   @@index([userId, itemCode, year, month])
+  @@index([userId, deletedAt, itemCode, year, month])
   @@index([productId])
   @@map("stock_snapshot")
 }
@@ -984,6 +986,7 @@ model ExpiryLot {
 
   @@unique([userId, importKey])
   @@index([userId, expDate])
+  @@index([userId, deletedAt, expDate])
   @@index([productId])
   @@map("expiry_lot")
 }
@@ -1046,6 +1049,7 @@ model StoreInLot {
 
   @@unique([userId, importKey])
   @@index([userId, expDate])
+  @@index([userId, deletedAt, expDate])
   @@map("store_in_lot")
 }
 
@@ -1125,6 +1129,7 @@ model SalesLine {
   @@unique([userId, importKey])
   @@index([userId, saleDate])
   @@index([userId, deletedAt, saleDate])
+  @@index([userId, deletedAt, saleDate, itemCode])
   @@index([channel])
   @@index([productId])
   @@index([principal])

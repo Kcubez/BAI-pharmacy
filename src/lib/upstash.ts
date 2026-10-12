@@ -27,12 +27,14 @@ export function upstash(): Redis | null {
 // ─── Cached fetch ────────────────────────────────────────────────────────────
 
 const VERSION_PREFIX = "bai:ver";
-const CACHE_REQUEST_TIMEOUT_MS = 750;
+const CACHE_REQUEST_TIMEOUT_MS = 150;
+let cacheUnavailableUntil = 0;
 
 type LocalCacheEntry = { expiresAt: number; data: unknown };
 type LocalCacheStore = {
   entries: Map<string, LocalCacheEntry>;
   inFlight: Map<string, Promise<unknown>>;
+  generations?: Map<string, number>;
 };
 
 // Development and single-instance deployments should not repeat expensive
@@ -45,6 +47,7 @@ const localCache = localCacheStore.__baiLocalCache ?? {
   inFlight: new Map<string, Promise<unknown>>(),
 };
 if (!localCacheStore.__baiLocalCache) localCacheStore.__baiLocalCache = localCache;
+const generations = localCache.generations ??= new Map<string, number>();
 
 function localCacheKey(scope: string, userId: string, key: string) {
   return `${scope}:${userId}:${key}`;
@@ -96,21 +99,31 @@ async function cachedLocally<T>(
   if (pending) return { data: await pending, hit: true };
 
   const work = fetcher();
+  const scopeKey = `${scope}:${userId}`;
+  const generation = generations.get(scopeKey) ?? 0;
   localCache.inFlight.set(cacheKey, work);
   try {
     const data = await work;
-    localCache.entries.set(cacheKey, { data, expiresAt: Date.now() + ttlSec * 1000 });
+    if ((generations.get(scopeKey) ?? 0) === generation) {
+      // Bound process memory and remove expired entries during writes.
+      for (const [key, entry] of localCache.entries) if (entry.expiresAt <= Date.now()) localCache.entries.delete(key);
+      if (localCache.entries.size >= 500) localCache.entries.delete(localCache.entries.keys().next().value!);
+      localCache.entries.set(cacheKey, { data, expiresAt: Date.now() + ttlSec * 1000 });
+    }
     return { data, hit: false };
   } finally {
-    localCache.inFlight.delete(cacheKey);
+    if (localCache.inFlight.get(cacheKey) === work) localCache.inFlight.delete(cacheKey);
   }
 }
 
 export async function bumpCacheVersion(scope: string, userId: string): Promise<void> {
+  const scopeKey = `${scope}:${userId}`;
+  generations.set(scopeKey, (generations.get(scopeKey) ?? 0) + 1);
   const prefix = `${scope}:${userId}:`;
   for (const key of localCache.entries.keys()) {
     if (key.startsWith(prefix)) localCache.entries.delete(key);
   }
+  for (const key of localCache.inFlight.keys()) if (key.startsWith(prefix)) localCache.inFlight.delete(key);
   const r = upstash();
   if (!r) return;
   await r.incr(`${VERSION_PREFIX}:${scope}:${userId}`);
@@ -127,16 +140,25 @@ export async function cached<T>(
   fetcher: () => Promise<T>,
 ): Promise<{ data: T; hit: boolean }> {
   const r = upstash();
-  if (!r) return cachedLocally(scope, userId, key, ttlSec, fetcher);
+  // Development has one process; imports invalidate its local cache directly.
+  // Production retains remote version checks for cross-instance invalidation.
+  if (!r || process.env.NODE_ENV === "development" || Date.now() < cacheUnavailableUntil) {
+    return cachedLocally(scope, userId, key, ttlSec, fetcher);
+  }
 
   const ver = await versionOf(scope, userId);
-  if (ver === null) return cachedLocally(scope, userId, key, ttlSec, fetcher);
+  if (ver === null) {
+    cacheUnavailableUntil = Date.now() + 30_000;
+    return cachedLocally(scope, userId, key, ttlSec, fetcher);
+  }
   const cacheKey = `bai:cache:${scope}:${userId}:v${ver}:${key}`;
   try {
     const hit = await cacheRequest(r.get<T>(cacheKey));
     if (hit !== null && hit !== undefined) return { data: hit, hit: true };
   } catch {
     // Cache read failure must never break the request.
+    cacheUnavailableUntil = Date.now() + 30_000;
+    return cachedLocally(scope, userId, key, ttlSec, fetcher);
   }
   const data = await fetcher();
   try {

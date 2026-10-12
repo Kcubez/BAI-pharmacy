@@ -4,6 +4,19 @@ import { notDeleted } from "@/lib/soft-delete";
 import { ownedByUserOrAdmin } from "@/lib/tenant-scope";
 import { GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
+import { cached } from "@/lib/upstash";
+import { withDeadline } from "@/lib/with-deadline";
+import { z } from "zod";
+import { parsePeriodParams, resolvePeriodRange } from "@/lib/period-range";
+import { growthPercent } from "@/lib/pharmacy-calculations";
+import { pharmacyStockoutCount, pharmacyOverdueSupplier } from "@/generated/prisma/sql";
+import { OPEN_AR_STATUSES, OPEN_AP_STATUSES } from "@/lib/constants";
+
+const recommendationSchema = z.array(z.object({
+  title: z.string(), detail: z.string(),
+  link: z.enum(["/pharmacy", "/pharmacy/sales", "/pharmacy/ar", "/pharmacy/inventory", "/pharmacy/payables", "/pharmacy/import"]),
+  priority: z.enum(["high", "medium", "low"]),
+})).min(1).max(5);
 
 export interface PharmaRecommendation {
   title: string;
@@ -21,18 +34,16 @@ export async function GET(req: NextRequest) {
 
   const userWhere = ownedByUserOrAdmin(session);
   const now = new Date();
-  const qYear = Number(req.nextUrl.searchParams.get("year"));
-  const qMonth = Number(req.nextUrl.searchParams.get("month"));
-  const base = Number.isFinite(qYear) && qMonth >= 1 && qMonth <= 12
-    ? new Date(qYear, qMonth - 1, 1)
-    : new Date(now.getFullYear(), now.getMonth(), 1);
-  const cur = base;
-  const prev = new Date(cur.getFullYear(), cur.getMonth() - 1, 1);
-  const curLabel = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`;
+  const params = new URLSearchParams(req.nextUrl.searchParams);
+  params.set("period", "month");
+  const { start: cur, end: until } = resolvePeriodRange(parsePeriodParams(params));
+  const prev = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth()-1, 1));
+  const curLabel = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth()+1).padStart(2,"0")}`;
+  const { data, hit } = await cached("pharmacy", session.user.id, `recommendations-v3:${curLabel}`, 300, async () => {
 
-  const [salesCur, salesPrev, arTop, apTop, stockoutCount, overstockCount, reorderCount, expiring90Count] = await Promise.all([
+  const [salesCur, salesPrev, arTop, apTop, stockoutRows, expiring90Count] = await Promise.all([
     prisma.salesLine.aggregate({
-      where: { ...userWhere, ...notDeleted, saleDate: { gte: cur } },
+      where: { ...userWhere, ...notDeleted, saleDate: { gte: cur, lt: until } },
       _sum: { amount: true },
       _count: true,
     }),
@@ -41,41 +52,24 @@ export async function GET(req: NextRequest) {
       _sum: { amount: true },
     }),
     prisma.receivable.findMany({
-      where: { ...userWhere, ...notDeleted, paymentStatus: "overdue" },
-      select: { customerName: true, netAmount: true, overdueDays: true },
+      where: { ...userWhere, ...notDeleted, paymentStatus: { in: OPEN_AR_STATUSES }, OR: [{ paymentStatus: "overdue" }, { dueDate: { lt: now } }] },
+      select: { customerName: true, netAmount: true, amount: true, overdueDays: true },
       orderBy: { overdueDays: "desc" },
       take: 3,
     }),
-    prisma.purchaseInvoice.findMany({
-      where: { ...userWhere, ...notDeleted, status: "overdue" },
-      select: { supplierName: true, netAmount: true, amount: true },
-      take: 50,
-    }),
-    prisma.stockSnapshot.count({ where: { ...userWhere, qty: { lte: 0 } } }),
-    prisma.salesLine.aggregate({
-      where: { ...userWhere, ...notDeleted },
-      _count: true,
-    }),
-    prisma.purchaseOrder.count({
-      where: { ...userWhere, ...notDeleted, qtyDelivered: null },
-    }),
+    prisma.$queryRawTyped(pharmacyOverdueSupplier(session.user.id, now, OPEN_AP_STATUSES)),
+    prisma.$queryRawTyped(pharmacyStockoutCount(session.user.id, now.getUTCFullYear(), now.getUTCMonth()+1)),
     prisma.expiryLot.count({
       where: { ...userWhere, ...notDeleted, expDate: { gte: now, lt: new Date(now.getTime() + 90 * 86400000) } },
     }),
   ]);
-  void overstockCount;
-  void reorderCount;
 
   const salesTotal = salesCur._sum.amount ?? 0;
   const prevTotal = salesPrev._sum.amount ?? 0;
-  const momPct = prevTotal > 0 ? Math.round(((salesTotal - prevTotal) / prevTotal) * 100) : 0;
+  const momPct = growthPercent(salesTotal, prevTotal);
+  const stockoutCount = Number(stockoutRows[0]?.n ?? 0);
 
-  const apBySupplier = new Map<string, number>();
-  for (const r of apTop) {
-    const k = r.supplierName ?? "Unknown";
-    apBySupplier.set(k, (apBySupplier.get(k) ?? 0) + (r.netAmount ?? r.amount ?? 0));
-  }
-  const worstSupplier = [...apBySupplier.entries()].sort((a, b) => b[1] - a[1])[0];
+  const worstSupplier = apTop[0] ? [apTop[0].supplier ?? "Unknown", apTop[0].amount ?? 0] as const : undefined;
 
   const heuristic: PharmaRecommendation[] = [];
   if (salesCur._count === 0) {
@@ -86,7 +80,7 @@ export async function GET(req: NextRequest) {
       link: "/pharmacy/import",
       priority: "low",
     });
-  } else if (momPct < -10) {
+  } else if (momPct != null && momPct < -10) {
     heuristic.push({
       title: `Sales ကျဆင်းနေတယ် (${momPct}%)`,
       detail: `ဒီလ ${Math.round(salesTotal).toLocaleString()} vs ပြီးခဲ့တလ ${Math.round(prevTotal).toLocaleString()}။ ဘယ် company/product ကျလဲ Sales Analysis မှာစစ်ပါ။`,
@@ -98,7 +92,7 @@ export async function GET(req: NextRequest) {
     const t = arTop[0];
     heuristic.push({
       title: `AR follow-up: ${t.customerName} (${t.overdueDays ?? "?"} ရက် overdue)`,
-      detail: `${Math.round(t.netAmount ?? 0).toLocaleString()} — priority စာရင်းအတိုင်း ဖုန်းဆက်လိုက်ပါ။`,
+      detail: `${Math.round(t.netAmount ?? t.amount ?? 0).toLocaleString()} — priority စာရင်းအတိုင်း ဖုန်းဆက်လိုက်ပါ။`,
       link: "/pharmacy/ar",
       priority: "high",
     });
@@ -145,22 +139,24 @@ export async function GET(req: NextRequest) {
     if (settings?.geminiApiKey) {
       const genAI = new GoogleGenAI({ apiKey: settings.geminiApiKey });
       const prompt = `You are a pharmaceutical distribution business analyst. Reply ONLY with JSON array: [{"title": string (Myanmar), "detail": string (Myanmar, 1-2 sentences: what happened, why, what next), "link": one of /pharmacy /pharmacy/sales /pharmacy/ar /pharmacy/inventory /pharmacy/payables, "priority": "high"|"medium"|"low"}]. Max 5 items.
-Facts (MMK): this-month sales ${Math.round(salesTotal)}, last-month sales ${Math.round(prevTotal)} (MoM ${momPct}%), top overdue AR: ${arTop.map((r) => `${r.customerName} ${Math.round(r.netAmount ?? 0)} (${r.overdueDays}d)`).join("; ") || "none"}, top overdue supplier: ${worstSupplier ? `${worstSupplier[0]} ${Math.round(worstSupplier[1])}` : "none"}, stockout snapshot rows: ${stockoutCount}.${salesCur._count === 0 ? " IMPORTANT: this month has zero sales records (data not imported yet) — do NOT report a sales drop; instead suggest importing data (link /pharmacy/import, priority low)." : ""}`;
-      const response = await genAI.models.generateContent({
+Facts (MMK): this-month sales ${Math.round(salesTotal)}, last-month sales ${Math.round(prevTotal)} (MoM ${momPct == null ? 'not comparable: zero baseline' : `${momPct}%`}), top overdue AR: ${arTop.map((r) => `${r.customerName} ${Math.round(r.netAmount ?? r.amount ?? 0)} (${r.overdueDays}d)`).join("; ") || "none"}, top overdue supplier: ${worstSupplier ? `${worstSupplier[0]} ${Math.round(worstSupplier[1])}` : "none"}, latest stockout SKUs: ${stockoutCount}.${salesCur._count === 0 ? " IMPORTANT: this month has zero sales records (data not imported yet) — do NOT report a sales drop; instead suggest importing data (link /pharmacy/import, priority low)." : ""}`;
+      const response = await withDeadline((abortSignal) => genAI.models.generateContent({
         model: settings.geminiModel || "gemini-3.1-flash-lite-preview",
         contents: prompt,
-        config: { responseMimeType: "application/json" },
-      });
+        config: { responseMimeType: "application/json", abortSignal },
+      }), 2000);
       const raw = response.text?.trim();
       if (raw) {
-        const parsed = JSON.parse(raw) as PharmaRecommendation[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return NextResponse.json({ recommendations: parsed.slice(0, 5), source: "gemini", month: curLabel });
+        const parsed = recommendationSchema.safeParse(JSON.parse(raw));
+        if (parsed.success) {
+          return { recommendations: parsed.data, source: "gemini", month: curLabel };
         }
       }
     }
   } catch (e) {
     console.error("Pharmacy recommendations AI failed; using heuristics:", e);
   }
-  return NextResponse.json({ recommendations: heuristic, source: "heuristic", month: curLabel });
+  return { recommendations: heuristic, source: "heuristic", month: curLabel };
+  });
+  return NextResponse.json(data, { headers: { "X-Cache": hit ? "HIT" : "MISS" } });
 }

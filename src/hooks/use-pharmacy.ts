@@ -40,7 +40,7 @@ export interface CompanyHealth {
   company: string;
   sales: number;
   prevSales: number;
-  momPct: number;
+  momPct: number | null;
   arOverdue: number;
 }
 
@@ -55,7 +55,8 @@ export interface PharmacyOverview {
     arLimit: number | null;
     apLimit: number | null;
   };
-  sales: { total: number; lines: number; target: number | null; kpi: PharmaKpi; momPct?: number };
+  sales: { total: number; lines: number; target: number | null; kpi: PharmaKpi; momPct?: number | null };
+  comparison?: { label: string; currentStart: string; currentEnd: string; previousStart: string; previousEnd: string };
   collection: { total: number; invoices: number; target: number | null; kpi: PharmaKpi };
   purchases: { total: number; invoices: number; target: number | null; kpi: PharmaKpi };
   ar: { outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
@@ -133,6 +134,7 @@ export interface ExpiryRow {
 }
 
 export interface PharmacyInventory {
+  total: number;
   totals: { skus: number; value: number; stockout: number; belowMin?: number; overstock: number; slow: number; reorder: number; expired?: number; expiring90?: number };
   page: number;
   limit: number;
@@ -198,6 +200,7 @@ export function usePharmacyRecommendations(periodKey?: string, enabled = true) {
   const query = m ? `?year=${m[1]}&month=${Number(m[2])}` : "";
   return useQuery({
     queryKey: [...pharmacyKeys.all, "recommendations", periodKey ?? "current"] as const,
+    meta: { background: true },
     queryFn: ({ signal }) =>
       getJson<{ recommendations: PharmaRecommendation[]; source: string; month?: string }>(
         `/api/pharmacy/recommendations${query}`,
@@ -297,10 +300,10 @@ export function usePharmacyAr(period: string, page = 1, limit = 10, search = "",
   });
 }
 
-export function usePharmacyInventory(period: string, page = 1, limit = 10, search = "", enabled = true) {
+export function usePharmacyInventory(period: string, page = 1, limit = 10, search = "", tab = "reorder", sort = "cover", enabled = true) {
   return useQuery({
-    queryKey: [...pharmacyKeys.inventory(period, page, limit), search] as const,
-    queryFn: ({ signal }) => getJson<PharmacyInventory>(`/api/pharmacy/inventory?${periodQuery(period)}&page=${page}&limit=${limit}&q=${encodeURIComponent(search)}`, signal),
+    queryKey: [...pharmacyKeys.inventory(period, page, limit), search, tab, sort] as const,
+    queryFn: ({ signal }) => getJson<PharmacyInventory>(`/api/pharmacy/inventory?${periodQuery(period)}&page=${page}&limit=${limit}&q=${encodeURIComponent(search)}&tab=${tab}&sort=${sort}`, signal),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
     enabled,

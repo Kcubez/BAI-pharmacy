@@ -889,6 +889,17 @@ export type MarketingMetricRecord = {
 
 export type MarketingMetricsResponse = {
   metrics: MarketingMetricRecord[];
+  total: number;
+  page: number;
+  totalPages: number;
+  channels: Array<{ channel: string; spend: number; orders: number; reach: number }>;
+};
+
+export type MarketingMetricsParams = {
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  limit?: number;
 };
 
 export type MarketingMetricInput = {
@@ -906,10 +917,12 @@ export type MarketingMetricInput = {
 };
 
 export const marketingMetricsApi = {
-  list: (params: { dateFrom?: string; dateTo?: string } = {}) => {
+  list: (params: MarketingMetricsParams = {}) => {
     const sp = new URLSearchParams();
     if (params.dateFrom) sp.set("dateFrom", params.dateFrom);
     if (params.dateTo) sp.set("dateTo", params.dateTo);
+    if (params.page) sp.set("page", String(params.page));
+    if (params.limit) sp.set("limit", String(params.limit));
     const qs = sp.toString();
     return request<MarketingMetricsResponse>(`/api/marketing-metrics${qs ? `?${qs}` : ""}`);
   },
@@ -1021,4 +1034,3 @@ export const planningApi = {
   insights: (params: { dateFrom?: string; dateTo?: string } = {}) =>
     request<PlanningInsightsResponse>(`/api/planning/insights${buildDateRangeQuery(params)}`),
 };
-

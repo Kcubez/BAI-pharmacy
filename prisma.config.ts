@@ -3,12 +3,18 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+// Schema/TypedSQL tooling shares one direct connection rather than opening a
+// burst of sessions through the pooler. The application's pg pool is separate.
+const toolingUrl = process.env.DIRECT_URL ? new URL(process.env.DIRECT_URL) : undefined;
+if (toolingUrl && !toolingUrl.searchParams.has("connection_limit")) toolingUrl.searchParams.set("connection_limit", "1");
+if (toolingUrl && !toolingUrl.searchParams.has("connect_timeout")) toolingUrl.searchParams.set("connect_timeout", "30");
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DIRECT_URL"],
+    url: toolingUrl?.toString(),
   },
 });

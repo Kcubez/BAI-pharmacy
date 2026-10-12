@@ -1,0 +1,23 @@
+import React from "react";
+import { expect, it, vi } from "vitest";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+vi.mock("next/navigation", () => ({ usePathname: () => "/pharmacy", useSearchParams: () => new URLSearchParams() }));
+import { GlobalLoadingBar } from "@/components/global-loading-bar";
+it("ignores background recommendations but shows foreground data loading", async () => {
+  const client = new QueryClient();
+  let finishBackground!: () => void;
+  let finishForeground!: () => void;
+  const background = client.fetchQuery({ queryKey: ["ai"], meta: { background: true }, queryFn: () => new Promise<boolean>(resolve => { finishBackground=() => resolve(true); }) });
+  render(<QueryClientProvider client={client}><GlobalLoadingBar /></QueryClientProvider>);
+  expect(screen.queryByRole("progressbar")).toBeNull();
+  const foreground = client.fetchQuery({ queryKey: ["inventory"], queryFn: () => new Promise<boolean>(resolve => { finishForeground=() => resolve(true); }) });
+  await waitFor(() => expect(screen.getByRole("progressbar")).toBeVisible());
+  finishForeground();
+  await foreground;
+  await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+  finishBackground();
+  await background;
+  cleanup();
+  client.clear();
+});

@@ -9,7 +9,7 @@ const COMPLETE_DELAY_MS = 200;
 function GlobalLoadingBarInner() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const fetchingCount = useIsFetching();
+  const fetchingCount = useIsFetching({ predicate: (query) => query.meta?.background !== true });
   const [isVisible, setIsVisible] = useState(false);
   const [progress, setProgress] = useState(0);
   const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null);

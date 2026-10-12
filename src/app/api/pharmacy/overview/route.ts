@@ -1,3 +1,5 @@
+import { RequestTiming } from "@/lib/request-timing";
+import { comparisonRange, growthPercent, collectionPurchaseDifference } from "@/lib/pharmacy-calculations";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { notDeleted } from "@/lib/soft-delete";
@@ -5,7 +7,10 @@ import { ownedByUserOrAdmin } from "@/lib/tenant-scope";
 import { elapsedRatio, parsePeriodParams, resolvePeriodRange, targetAnchor } from "@/lib/period-range";
 import type { ResolvedPeriod } from "@/lib/period-range";
 import { OPEN_AP_STATUSES, OPEN_AR_STATUSES } from "@/lib/constants";
-import { Prisma } from "@/generated/prisma/client";
+import { pharmacyOverviewTotals, pharmacyOpenArSummary, pharmacyOpenApSummary, pharmacyMonthlyCollections, pharmacyMonthlyPurchases, pharmacyMonthlySales } from "@/generated/prisma/sql";
+import { z } from "zod";
+
+const bankRowsSchema = z.array(z.object({ bank: z.string().nullable(), amount: z.number(), invoices: z.number() }));
 import { cached } from "@/lib/upstash";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -41,8 +46,6 @@ export interface PharmaKpi {
   progress: number;
 }
 
-type ArOpenSummary = { company: string; outstanding: number; overdue: number; invoices: bigint };
-type ApOpenSummary = { outstanding: number; overdue: number; invoices: bigint };
 
 function progressOf(current: number, target: number | null): number {
   if (!target || target <= 0) return 0;
@@ -78,110 +81,57 @@ function limitKpi(current: number, limit: number | null): PharmaKpi {
 
 // GET /api/pharmacy/overview — CEO KPIs with target pacing (commerce-style).
 export async function GET(req: NextRequest) {
-  const session = await auth.api.getSession({ headers: req.headers });
+  const timing = new RequestTiming();
+  const session = await timing.measure("auth", () => auth.api.getSession({ headers: req.headers }));
   if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-  const cacheKey = `overview:${req.nextUrl.searchParams.toString()}`;
-  const { data, hit } = await cached("pharmacy", session.user.id, cacheKey, 60, async () => {
+  const cacheKey = `overview-v3:${req.nextUrl.searchParams.toString()}`;
+  const { data, hit } = await timing.measure("data", () => cached("pharmacy", session.user.id, cacheKey, 60, async () => timing.measure("db", async () => {
     const resolved = parsePeriodParams(req.nextUrl.searchParams);
     const { start, end } = resolvePeriodRange(resolved);
     const showPacing = paced(resolved);
     const ratio = showPacing ? elapsedRatio(start, end) : 1;
     const anchor = pharmacyAnchor(resolved);
     const userWhere = ownedByUserOrAdmin(session);
-    const inRange = { gte: start, lt: end };
-
-    const [sales, collected, purchased, monthTarget, yearTarget] = await Promise.all([
-      prisma.salesLine.aggregate({
-        where: { ...userWhere, ...notDeleted, saleDate: inRange },
-        _sum: { amount: true },
-        _count: true,
-      }),
-      prisma.receivable.aggregate({
-        where: { ...userWhere, ...notDeleted, paidDate: inRange },
-        _sum: { netAmount: true },
-        _count: true,
-      }),
-      prisma.purchaseInvoice.aggregate({
-        where: { ...userWhere, ...notDeleted, invoiceDate: inRange },
-        _sum: { netAmount: true, amount: true },
-        _count: true,
-      }),
-      prisma.periodTarget.findFirst({
-        where: { userId: session.user.id, period: "month", year: anchor.year, month: anchor.month },
-      }),
-      prisma.periodTarget.findFirst({
-        where: { userId: session.user.id, period: "year", year: anchor.year, month: 0 },
-      }),
-    ]);
-    const target = monthTarget ?? yearTarget;
-
-    // Latest snapshot value — one query: newest (year, month) row per item.
-    const latestRows = await prisma.$queryRaw<Array<{ amount: number | null }>>(
-      Prisma.sql`SELECT DISTINCT ON (item_code) amount FROM stock_snapshot
-        WHERE user_id = ${session.user.id} AND deleted_at IS NULL
-        ORDER BY item_code, year DESC, month DESC`,
-    );
-    const stockValue = latestRows.reduce((s, r) => s + (r.amount ?? 0), 0);
-    const stockSkus = latestRows.length;
 
     const now = new Date();
-    const salesTotal = sales._sum.amount ?? 0;
-    const collectionTotal = collected._sum.netAmount ?? 0;
-    const purchasesTotal = purchased._sum.netAmount ?? purchased._sum.amount ?? 0;
-
     // ── Decision signals: company health, bank split, cashflow, alerts ──
-    // Previous-window compare. For overall the range spans 1900→9999, so a
-    // naive start−range underflows Postgres timestamptz (year −6200 → 500).
-    // Clamp to 2000; overall falls back to trailing-30d vs prior-30d.
+    // Calendar comparisons use calendar boundaries; overall compares equal 30d windows.
     const DAY_MS = 86400000;
-    const isOverall = resolved.period === "overall";
-    const cmpEnd = isOverall ? new Date(now.getTime() - 30 * DAY_MS) : start;
-    const cmpStart = isOverall
-      ? new Date(now.getTime() - 60 * DAY_MS)
-      : new Date(Math.max(start.getTime() - (end.getTime() - start.getTime()), Date.UTC(2000, 0, 1)));
-    const prevStart = cmpStart;
-    const [salesCur, salesPrev, bankRows, stockoutRows, expiringRows, arOpenRows, apOpenRows] = await Promise.all([
+    const comparison = comparisonRange(resolved, now);
+    const cfFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    // All independent reads start together; compact totals replace six reads.
+    const [totalsRows, targets, salesCur, salesPrev, arOpenRows, apOpenRows, cfCollectedRaw, cfPurchasedRaw, salesTrendRaw] = await Promise.all([
+      prisma.$queryRawTyped(pharmacyOverviewTotals(session.user.id, start, end, now, new Date(now.getTime() + 90 * DAY_MS))),
+      prisma.periodTarget.findMany({
+        where: { userId: session.user.id, year: anchor.year, OR: [
+          { period: "month", month: anchor.month }, { period: "year", month: 0 },
+        ] },
+      }),
       prisma.salesLine.groupBy({
         by: ["principal"],
-        where: { ...userWhere, ...notDeleted, saleDate: inRange },
+        where: { ...userWhere, ...notDeleted, saleDate: { gte: comparison.currentStart, lt: comparison.currentEnd } },
         _sum: { amount: true },
       }),
       prisma.salesLine.groupBy({
         by: ["principal"],
-        where: { ...userWhere, ...notDeleted, saleDate: { gte: prevStart, lt: cmpEnd } },
+        where: { ...userWhere, ...notDeleted, saleDate: { gte: comparison.previousStart, lt: comparison.previousEnd } },
         _sum: { amount: true },
       }),
-      prisma.receivable.groupBy({
-        by: ["bank"],
-        where: { ...userWhere, ...notDeleted, paidDate: inRange },
-        _sum: { netAmount: true },
-        _count: true,
-      }),
-      prisma.$queryRaw<Array<{ n: bigint }>>(
-        Prisma.sql`SELECT COUNT(*) AS n FROM (SELECT DISTINCT item_code FROM stock_snapshot
-          WHERE user_id = ${session.user.id} AND deleted_at IS NULL AND qty <= 0) s`,
-      ),
-      prisma.expiryLot.count({
-        where: { ...userWhere, ...notDeleted, expDate: { gte: now, lt: new Date(now.getTime() + 90 * 86400000) } },
-      }),
-      prisma.$queryRaw<ArOpenSummary[]>(Prisma.sql`
-        SELECT COALESCE(NULLIF(TRIM(company_name), ''), 'Unknown') AS company,
-          COALESCE(SUM(net_amount), 0)::double precision AS outstanding,
-          COALESCE(SUM(CASE WHEN payment_status = 'overdue' OR due_date < ${now} THEN net_amount ELSE 0 END), 0)::double precision AS overdue,
-          COUNT(*)::bigint AS invoices
-        FROM receivable
-        WHERE user_id = ${session.user.id} AND deleted_at IS NULL
-          AND payment_status IN (${Prisma.join(OPEN_AR_STATUSES)})
-        GROUP BY 1`),
-      prisma.$queryRaw<ApOpenSummary[]>(Prisma.sql`
-        SELECT COALESCE(SUM(COALESCE(net_amount, amount)), 0)::double precision AS outstanding,
-          COALESCE(SUM(CASE WHEN status = 'overdue' OR due_date < ${now} THEN COALESCE(net_amount, amount) ELSE 0 END), 0)::double precision AS overdue,
-          COUNT(*)::bigint AS invoices
-        FROM purchase_invoice
-        WHERE user_id = ${session.user.id} AND deleted_at IS NULL
-          AND status IN (${Prisma.join(OPEN_AP_STATUSES)})`),
+      prisma.$queryRawTyped(pharmacyOpenArSummary(now, session.user.id, OPEN_AR_STATUSES)),
+      prisma.$queryRawTyped(pharmacyOpenApSummary(now, session.user.id, OPEN_AP_STATUSES)),
+      prisma.$queryRawTyped(pharmacyMonthlyCollections(session.user.id, cfFrom)),
+      prisma.$queryRawTyped(pharmacyMonthlyPurchases(session.user.id, cfFrom)),
+      prisma.$queryRawTyped(pharmacyMonthlySales(session.user.id, start, end)),
     ]);
+    const totals = totalsRows[0];
+    const bankRows = bankRowsSchema.parse(totals?.collectionByBank ?? []);
+    const target = targets.find(row => row.period === "month") ?? targets.find(row => row.period === "year");
+    const salesTotal = totals?.sales ?? 0;
+    const collectionTotal = totals?.collected ?? 0;
+    const purchasesTotal = totals?.purchased ?? 0;
+    const stockValue = totals?.stockValue ?? 0;
+    const stockSkus = totals?.stockSkus ?? 0;
     const arOutstanding = arOpenRows.reduce((sum, row) => sum + Number(row.outstanding), 0);
     const arOverdue = arOpenRows.reduce((sum, row) => sum + Number(row.overdue), 0);
     const arOpenCount = arOpenRows.reduce((sum, row) => sum + Number(row.invoices), 0);
@@ -204,7 +154,7 @@ export async function GET(req: NextRequest) {
     const companyHealth = [...salesByCo.entries()]
       .map(([company, total]) => {
         const prev = prevByCo.get(company) ?? 0;
-        const momPct = prev > 0 ? Math.round(((total - prev) / prev) * 100) : total > 0 ? 100 : 0;
+        const momPct = growthPercent(total, prev);
         return { company, sales: total, prevSales: prev, momPct, arOverdue: arOverdueByCo.get(company) ?? 0 };
       })
       .sort((a, b) => b.sales - a.sales)
@@ -214,8 +164,8 @@ export async function GET(req: NextRequest) {
     for (const r of bankRows) {
       const k = (r.bank ?? "Unknown").trim() || "Unknown";
       const e = bankMap.get(k) ?? { amount: 0, count: 0 };
-      e.amount += r._sum.netAmount ?? 0;
-      e.count += r._count;
+      e.amount += r.amount ?? 0;
+      e.count += r.invoices ?? 0;
       bankMap.set(k, e);
     }
     const collectionByBank = [...bankMap.entries()]
@@ -224,28 +174,6 @@ export async function GET(req: NextRequest) {
 
     // 6-month cashflow (collection vs purchases by calendar month) —
     // aggregated in Postgres, not 60k rows over the pooler.
-    const cfFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-    const [cfCollectedRaw, cfPurchasedRaw, salesTrendRaw] = await Promise.all([
-      prisma.$queryRaw<Array<{ month: string; total: number }>>(
-        Prisma.sql`SELECT to_char(paid_date, 'YYYY-MM') AS month, COALESCE(SUM(net_amount), 0) AS total
-          FROM receivable
-          WHERE user_id = ${session.user.id} AND deleted_at IS NULL AND paid_date >= ${cfFrom}
-          GROUP BY 1`,
-      ),
-      prisma.$queryRaw<Array<{ month: string; total: number }>>(
-        Prisma.sql`SELECT to_char(invoice_date, 'YYYY-MM') AS month, COALESCE(SUM(COALESCE(net_amount, amount)), 0) AS total
-          FROM purchase_invoice
-          WHERE user_id = ${session.user.id} AND deleted_at IS NULL AND invoice_date >= ${cfFrom}
-          GROUP BY 1`,
-      ),
-      prisma.$queryRaw<Array<{ month: string; total: number }>>(
-        Prisma.sql`SELECT to_char(sale_date, 'YYYY-MM') AS month, COALESCE(SUM(amount), 0) AS total
-          FROM sales_line
-          WHERE user_id = ${session.user.id} AND deleted_at IS NULL
-            AND sale_date >= ${start} AND sale_date < ${end}
-          GROUP BY 1 ORDER BY 1`,
-      ),
-    ]);
     const cfCollectedMap = new Map(cfCollectedRaw.map((r) => [r.month, Number(r.total)]));
     const cfPurchasedMap = new Map(cfPurchasedRaw.map((r) => [r.month, Number(r.total)]));
     const cfMap = new Map<string, { collection: number; purchases: number }>();
@@ -256,8 +184,8 @@ export async function GET(req: NextRequest) {
     }
     const cashflow = [...cfMap.entries()].map(([month, v]) => ({ month, ...v }));
 
-    const stockoutCount = Number(stockoutRows[0]?.n ?? 0);
-    const expiring90 = expiringRows;
+    const stockoutCount = totals?.stockout ?? 0;
+    const expiring90 = totals?.expiring90 ?? 0;
 
     const t = {
       sales: target?.targetSalesAmount ?? null,
@@ -272,9 +200,10 @@ export async function GET(req: NextRequest) {
     const salesKpiNow = trackKpi(salesTotal, t.sales, ratio, showPacing);
     const collectionKpiNow = trackKpi(collectionTotal, t.collection, ratio, showPacing);
     const prevSalesTotal = [...prevByCo.values()].reduce((s, v) => s + v, 0);
-    const momPct = prevSalesTotal > 0 ? Math.round(((salesTotal - prevSalesTotal) / prevSalesTotal) * 100) : 0;
-    if (sales._count > 0 && momPct < -10) {
-      alerts.push({ title: `Sales ကျဆင်းနေတယ် (${momPct}%)`, detail: `ဒီကာလ ${Math.round(salesTotal).toLocaleString()} vs အရင်ကာလ ${Math.round(prevSalesTotal).toLocaleString()}`, tone: "red", action: { label: "Review sales", href: "/pharmacy/sales" } });
+    const comparisonSales = [...salesByCo.values()].reduce((sum, amount) => sum+amount, 0);
+    const momPct = growthPercent(comparisonSales, prevSalesTotal);
+    if (comparisonSales > 0 && momPct != null && momPct < -10) {
+      alerts.push({ title: `Sales ကျဆင်းနေတယ် (${momPct}%)`, detail: `ဒီကာလ ${Math.round(comparisonSales).toLocaleString()} vs အရင်ကာလ ${Math.round(prevSalesTotal).toLocaleString()}`, tone: "red", action: { label: "Review sales", href: "/pharmacy/sales" } });
     }
     if (salesKpiNow.status === "Below Target") {
       alerts.push({ title: "Sales target risk", detail: `Expected ${salesKpiNow.expected?.toLocaleString()} — လက်ရှိ ${Math.round(salesTotal).toLocaleString()}`, tone: "amber", action: { label: "Review sales", href: "/pharmacy/sales" } });
@@ -300,12 +229,13 @@ export async function GET(req: NextRequest) {
 
     return {
       period: resolved.period,
+      comparison: { label: comparison.label, currentStart: comparison.currentStart, currentEnd: comparison.currentEnd, previousStart: comparison.previousStart, previousEnd: comparison.previousEnd },
       anchor: { ...anchor, label: anchor.period === "year" ? `${anchor.year} (Yearly)` : `${anchor.year}-${String(anchor.month).padStart(2, "0")}` },
       ratio,
       targets: t,
-      sales: { total: salesTotal, lines: sales._count, target: t.sales, kpi: trackKpi(salesTotal, t.sales, ratio, showPacing), momPct },
-      collection: { total: collectionTotal, invoices: collected._count, target: t.collection, kpi: trackKpi(collectionTotal, t.collection, ratio, showPacing) },
-      purchases: { total: purchasesTotal, invoices: purchased._count, target: t.expense, kpi: limitKpi(purchasesTotal, t.expense) },
+      sales: { total: salesTotal, lines: (totals?.salesLines ?? 0), target: t.sales, kpi: trackKpi(salesTotal, t.sales, ratio, showPacing), momPct },
+      collection: { total: collectionTotal, invoices: totals?.collectionInvoices ?? 0, target: t.collection, kpi: trackKpi(collectionTotal, t.collection, ratio, showPacing) },
+      purchases: { total: purchasesTotal, invoices: totals?.purchaseInvoices ?? 0, target: t.expense, kpi: limitKpi(purchasesTotal, t.expense) },
       ar: {
         outstanding: arOutstanding, overdue: arOverdue, openCount: arOpenCount,
         limit: t.arLimit, kpi: limitKpi(arOverdue, t.arLimit),
@@ -315,11 +245,10 @@ export async function GET(req: NextRequest) {
         limit: t.apLimit, kpi: limitKpi(apOverdue, t.apLimit),
       },
       stock: { value: stockValue, skus: stockSkus, stockout: stockoutCount, expiring90 },
-      // Period-matched cashflow (collection − purchases in the same period).
-      // Overall keeps the all-time view (collection − AP outstanding).
+      // Invoice comparison in the selected period; no cash payment ledger is available.
       cash: {
-        net: resolved.period === "overall" ? collectionTotal - apOutstanding : collectionTotal - purchasesTotal,
-        label: resolved.period === "overall" ? "collection − AP" : "collection − purchases",
+        net: collectionPurchaseDifference(collectionTotal, purchasesTotal),
+        label: "collection − purchases",
       },
       alerts,
       companyHealth,
@@ -327,6 +256,6 @@ export async function GET(req: NextRequest) {
       cashflow,
       salesTrend: salesTrendRaw.map((row) => ({ month: row.month, amount: Number(row.total) })),
     };
-  });
-  return NextResponse.json(data, { headers: { "X-Cache": hit ? "HIT" : "MISS" } });
+  })));
+  return NextResponse.json(data, { headers: { "Server-Timing": timing.header(), "X-Cache": hit ? "HIT" : "MISS" } });
 }

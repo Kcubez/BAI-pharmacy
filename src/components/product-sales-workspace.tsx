@@ -780,12 +780,14 @@ function SalesWorkspace({ data, recommendations, isRecommendationsLoading, dateF
 
 function MarketingWorkspace({ data, recommendations, isRecommendationsLoading, dateFrom, dateTo }: { data?: CommerceWorkspaceData['marketing']; recommendations?: CommerceActionRecommendation[]; isRecommendationsLoading: boolean; dateFrom?: string; dateTo?: string }) {
   const queryClient = useQueryClient();
+  const [metricPage, setMetricPage] = useState(1);
+  const metricPageSize = 10;
   const {
     data: metricsData,
     isLoading: isLoadingMetrics,
     isError: isMetricsError,
     refetch: refetchMetrics,
-  } = useMarketingMetrics({ dateFrom, dateTo });
+  } = useMarketingMetrics({ dateFrom, dateTo, page: metricPage, limit: metricPageSize });
   const metrics = useMemo(() => metricsData?.metrics ?? [], [metricsData]);
   const [metricDialogOpen, setMetricDialogOpen] = useState(false);
   const [editingMetric, setEditingMetric] = useState<MarketingMetricRecord | null>(null);
@@ -892,37 +894,28 @@ function MarketingWorkspace({ data, recommendations, isRecommendationsLoading, d
   const weekly = data?.chart.length ? data.chart.map((item) => [item.label, item.spend, item.orders] as const) : [['W1', 0, 0], ['W2', 0, 0], ['W3', 0, 0], ['W4', 0, 0]] as const;
   const topProducts = data?.topProducts ?? [];
 
-  // Channel spend breakdown, computed from the same period-scoped metrics
-  // table below — no extra query. Shows where the ad budget actually went.
+  // The API aggregates all matching records, while the table only loads one
+  // page. This keeps the insight correct as the dataset grows.
   const channelBreakdown = useMemo(() => {
-    const byChannel = new Map<string, { spend: number; orders: number; reach: number }>();
-    for (const metric of metrics) {
-      const key = metric.channel?.trim() || "Other";
-      const current = byChannel.get(key) ?? { spend: 0, orders: 0, reach: 0 };
-      current.spend += Number(metric.spend) || 0;
-      current.orders += Number(metric.adDrivenOrders) || 0;
-      current.reach += Number(metric.reach) || Number(metric.impressions) || 0;
-      byChannel.set(key, current);
-    }
-    const total = [...byChannel.values()].reduce((sum, entry) => sum + entry.spend, 0);
+    const channels = metricsData?.channels ?? [];
+    const total = channels.reduce((sum, entry) => sum + entry.spend, 0);
     return {
       total,
-      rows: [...byChannel.entries()]
-        .map(([channel, entry]) => ({
-          channel,
+      rows: channels
+        .map((entry) => ({
           ...entry,
           share: total > 0 ? (entry.spend / total) * 100 : 0,
           costPerOrder: entry.orders > 0 ? entry.spend / entry.orders : 0,
         }))
         .sort((a, b) => b.spend - a.spend),
     };
-  }, [metrics]);
+  }, [metricsData]);
   const channelColors = ["#0ea5e9", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444", "#64748b"];
 
-  const [metricPage, setMetricPage] = useState(1);
-  const metricPageSize = 10;
-  const totalMetricPages = Math.max(1, Math.ceil(metrics.length / metricPageSize));
-  const pagedMetrics = metrics.slice((metricPage - 1) * metricPageSize, metricPage * metricPageSize);
+  useEffect(() => {
+    setMetricPage(1);
+  }, [dateFrom, dateTo]);
+  const totalMetricPages = Math.max(1, metricsData?.totalPages ?? 1);
 
   return (
     <div className="space-y-6">
@@ -1029,8 +1022,8 @@ function MarketingWorkspace({ data, recommendations, isRecommendationsLoading, d
                   <p className="font-semibold text-red-600 dark:text-red-400">Couldn&apos;t load marketing records. Check your connection and try again.</p>
                   <Button variant="outline" size="sm" className="mt-3" onClick={() => void refetchMetrics()}>Retry</Button>
                 </td></tr>
-              ) : pagedMetrics.length > 0 ? (
-                pagedMetrics.map((metric) => (
+              ) : metrics.length > 0 ? (
+                metrics.map((metric) => (
                   <tr key={metric.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-950/50">
                     <td className="whitespace-nowrap px-5 py-4 text-xs font-bold text-slate-600 dark:text-slate-400">
                       {metric.metricDate ? metric.metricDate.slice(0, 10) : '—'}
@@ -1059,7 +1052,7 @@ function MarketingWorkspace({ data, recommendations, isRecommendationsLoading, d
         {totalMetricPages > 1 && (
           <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-800 bg-card/20 px-6 py-4">
             <div className="text-xs text-muted-foreground font-mono">
-              Showing Page <span className="text-foreground font-bold">{metricPage}</span> of <span className="text-foreground font-bold">{totalMetricPages}</span> ({metrics.length} total)
+              Showing Page <span className="text-foreground font-bold">{metricPage}</span> of <span className="text-foreground font-bold">{totalMetricPages}</span> ({metricsData?.total ?? 0} total)
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" disabled={metricPage <= 1} onClick={() => setMetricPage((p) => Math.max(1, p - 1))} className="bg-card border-border text-foreground hover:bg-muted cursor-pointer">

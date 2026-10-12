@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { notDeleted, softDeleteData } from "@/lib/soft-delete";
 import { ownedByUserOrAdmin } from "@/lib/tenant-scope";
 import { marketingMetricSchema } from "@/lib/validations";
+import { parsePageRequest } from "@/lib/pagination";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -12,6 +13,7 @@ export async function GET(req: NextRequest) {
 
   const dateFrom = req.nextUrl.searchParams.get("dateFrom");
   const dateTo = req.nextUrl.searchParams.get("dateTo");
+  const { page, limit } = parsePageRequest(req.nextUrl.searchParams);
 
   const where: Prisma.MarketingMetricWhereInput = { ...ownedByUserOrAdmin(session), ...notDeleted };
   if (dateFrom || dateTo) {
@@ -21,11 +23,37 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  const metrics = await prisma.marketingMetric.findMany({
-    where,
-    orderBy: { metricDate: "desc" },
+  const [metrics, total, channelTotals] = await Promise.all([
+    prisma.marketingMetric.findMany({
+      where,
+      orderBy: [{ metricDate: "desc" }, { id: "desc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.marketingMetric.count({ where }),
+    prisma.marketingMetric.groupBy({
+      by: ["channel"],
+      where,
+      _sum: { spend: true, adDrivenOrders: true, reach: true, impressions: true },
+    }),
+  ]);
+
+  // The table is paginated, but this small aggregate keeps the channel
+  // comparison accurate for the complete selected period.
+  const channels = channelTotals.map((row) => ({
+    channel: row.channel?.trim() || "Other",
+    spend: row._sum.spend ?? 0,
+    orders: row._sum.adDrivenOrders ?? 0,
+    reach: row._sum.reach ?? row._sum.impressions ?? 0,
+  }));
+
+  return NextResponse.json({
+    metrics,
+    total,
+    page,
+    totalPages: Math.ceil(total / limit),
+    channels,
   });
-  return NextResponse.json({ metrics });
 }
 
 export async function POST(req: NextRequest) {

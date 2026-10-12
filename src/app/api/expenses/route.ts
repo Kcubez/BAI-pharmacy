@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { notDeleted, softDeleteData } from "@/lib/soft-delete";
 import { ownedByUserOrAdmin } from "@/lib/tenant-scope";
 import { expenseSchema } from "@/lib/validations";
+import { parsePageRequest } from "@/lib/pagination";
 import type { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -10,10 +11,19 @@ export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: req.headers });
   if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   const category = req.nextUrl.searchParams.get("category");
+  const { page, limit } = parsePageRequest(req.nextUrl.searchParams);
   const where: Prisma.ExpenseWhereInput = { ...ownedByUserOrAdmin(session), ...notDeleted };
   if (category) where.category = category as Prisma.EnumExpenseCategoryFilter["equals"];
-  const expenses = await prisma.expense.findMany({ where, orderBy: { expenseDate: "desc" } });
-  return NextResponse.json({ expenses });
+  const [expenses, total] = await Promise.all([
+    prisma.expense.findMany({
+      where,
+      orderBy: [{ expenseDate: "desc" }, { id: "desc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.expense.count({ where }),
+  ]);
+  return NextResponse.json({ expenses, total, page, totalPages: Math.ceil(total / limit) });
 }
 
 export async function POST(req: NextRequest) {

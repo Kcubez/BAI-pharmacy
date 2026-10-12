@@ -461,8 +461,8 @@ function OverviewView() {
               icon={Package} progressPercent={d.stock.skus > 0 ? 68 : 0} accent={CARD_ACCENTS.violet}
             />
             <ServiceKpiCard
-              title="Cash Net" value={mmk(d.cash.net)} target={d.cash.label}
-              expected="period cashflow" status={d.cash.net >= 0 ? "Positive" : "Negative"}
+              title="Collection − Purchases" value={mmk(d.cash.net)} target={d.cash.label}
+              expected="Invoice comparison · not cash balance" status={d.cash.net >= 0 ? "Positive" : "Negative"}
               statusTone={d.cash.net >= 0 ? "good" : "bad"}
               icon={DollarSign} progressPercent={d.cash.net >= 0 ? 96 : 28} accent={CARD_ACCENTS.indigo}
             />
@@ -474,7 +474,7 @@ function OverviewView() {
             <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
               <div className="flex justify-between items-center mb-4 border-b-2 border-border pb-3">
                 <h3 className="font-bold text-foreground text-sm tracking-wide uppercase flex items-center gap-2">
-                  <Award className="w-4 h-4 text-amber-500" />Company Health — sales MoM + AR overdue
+                  <Award className="w-4 h-4 text-amber-500" />Company Health — sales {d.comparison?.label ?? "change"} + AR overdue
                 </h3>
               </div>
               <div className="overflow-x-auto">
@@ -483,20 +483,20 @@ function OverviewView() {
                     <TableRow>
                       <TableHead>Company</TableHead>
                       <TableHead className="text-right">Sales</TableHead>
-                      <TableHead className="text-right">MoM</TableHead>
+                      <TableHead className="text-right">{d.comparison?.label ?? "Change"}</TableHead>
                       <TableHead className="text-right">AR Overdue</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {(d.companyHealth ?? []).map((c) => {
-                      const weak = c.momPct < -10 || c.arOverdue > 0;
+                      const weak = (c.momPct != null && c.momPct < -10) || c.arOverdue > 0;
                       return (
                         <TableRow key={c.company}>
                           <TableCell className="font-bold text-sm max-w-56 truncate" title={c.company}>{c.company}</TableCell>
                           <TableCell className="text-right font-extrabold">{mmk(c.sales)}</TableCell>
-                          <TableCell className={`text-right font-bold ${c.momPct < -10 ? "text-red-500" : c.momPct > 0 ? "text-emerald-500" : "text-muted-foreground"}`}>
-                            {c.momPct > 0 ? "+" : ""}{c.momPct}%
+                          <TableCell className={`text-right font-bold ${c.momPct != null && c.momPct < -10 ? "text-red-500" : c.momPct != null && c.momPct > 0 ? "text-emerald-500" : "text-muted-foreground"}`}>
+                            {c.momPct == null ? "—" : `${c.momPct > 0 ? "+" : ""}${c.momPct}%`}
                           </TableCell>
                           <TableCell className={`text-right font-bold ${c.arOverdue > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
                             {c.arOverdue > 0 ? mmk(c.arOverdue) : "—"}
@@ -555,7 +555,7 @@ function OverviewView() {
             <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
                 <div className="flex justify-between items-center mb-4 border-b-2 border-border pb-3">
                   <h3 className="font-bold text-foreground text-sm tracking-wide uppercase flex items-center gap-2">
-                    <DollarSign className="w-4 h-4 text-indigo-500" />Cash-flow — collection vs purchases (6 mo)
+                    <DollarSign className="w-4 h-4 text-indigo-500" />Collections vs purchases (6 mo)
                   </h3>
                 </div>
                 <FinanceTimelineChart monthly={(d.cashflow ?? []).map((c) => [c.month, c.collection, c.purchases] as [string, number, number])} />
@@ -831,16 +831,13 @@ function InventoryView() {
   const [sort, setSort] = useQueryState("inv-sort", parseAsStringEnum(["cover", "value", "qty"]).withDefault("cover"));
   const [search, setSearch] = useQueryState("inv-q", parseAsString.withDefault(""));
   const dq = useDebounce(search);
-  const q = usePharmacyInventory(periodKey, page, limit, dq, filter.isReady);
+  const q = usePharmacyInventory(periodKey, page, limit, dq, tab, sort, filter.isReady);
   const isExpiryTab = tab === "expiring";
   const rows = useMemo(() => {
     if (isExpiryTab) return [];
     const list = [...(q.data ? (q.data[tab] as PharmacyInventoryRow[]) : [])];
-    if (sort === "value") list.sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
-    else if (sort === "qty") list.sort((a, b) => b.qty - a.qty);
-    else list.sort((a, b) => (a.coverDays ?? Number.MAX_SAFE_INTEGER) - (b.coverDays ?? Number.MAX_SAFE_INTEGER));
     return list;
-  }, [q.data, tab, sort, isExpiryTab]);
+  }, [q.data, tab, isExpiryTab]);
   const expiryRows = useMemo(() => {
     const list = [...(q.data?.expiring ?? [])];
     return list;
@@ -888,7 +885,7 @@ function InventoryView() {
                 onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                 className="h-8 w-52 text-xs"
               />
-              <Select value={sort} onValueChange={(v) => { if (v === "cover" || v === "value" || v === "qty") setSort(v); }}>
+              <Select value={sort} onValueChange={(v) => { if (v === "cover" || v === "value" || v === "qty") { setSort(v); setPage(1); } }}>
                 <SelectTrigger className="h-8 w-28 text-xs font-semibold">
                   {sort === "cover" ? "Cover" : sort === "value" ? "Value" : "Qty"}
                 </SelectTrigger>
@@ -991,11 +988,11 @@ function InventoryView() {
               />
               )}
             </div>
-            {d && !isExpiryTab && (
+            {d && (
               <TablePager
                 page={d.page}
                 limit={d.limit}
-                total={dq.trim() ? (tab === "reorder" ? (d.filteredTotals?.reorder ?? 0) : tab === "belowMin" ? (d.filteredTotals?.belowMin ?? 0) : tab === "stockout" ? (d.filteredTotals?.stockout ?? 0) : tab === "overstock" ? (d.filteredTotals?.overstock ?? 0) : d.filteredTotals?.slow ?? 0) : tab === "reorder" ? d.totals.reorder : tab === "belowMin" ? (d.totals.belowMin ?? 0) : tab === "stockout" ? d.totals.stockout : tab === "overstock" ? d.totals.overstock : d.totals.slow}
+                total={d.total}
                 isLoading={q.isFetching && !q.isPending}
                 onPage={(p) => setPage(p)}
                 onLimit={(l) => { setLimit(l); setPage(1); }}
@@ -1415,7 +1412,7 @@ function ImportView() {
           <CardContent>
             {mutation.isPending && (
               <p className="mb-3 text-sm text-muted-foreground">
-                ပြီးသည်အထိ ဒီ page မှာနေ (refresh မလုပ်နဲ့)
+                Please wait while refresh the page. 
               </p>
             )}
             <div className="overflow-x-auto rounded-lg border">
