@@ -7,6 +7,14 @@ const PUBLIC_PATHS = ["/login", "/admin/login", "/api/auth", "/api/telegram"];
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Retired setup links should never become post-login destinations.
+  if (pathname === "/setup" || pathname.startsWith("/setup/")) {
+    return NextResponse.redirect(new URL("/pharmacy", req.url));
+  }
+  if (pathname === "/api/setup" || pathname.startsWith("/api/setup/")) {
+    return NextResponse.json({ message: "Not found" }, { status: 404 });
+  }
+
   // Brute-force guard on credential sign-in (edge-compatible, Upstash-backed).
   if (pathname.startsWith("/api/auth/sign-in")) {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";

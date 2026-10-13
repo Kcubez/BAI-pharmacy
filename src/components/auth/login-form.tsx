@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Eye, EyeOff, LogIn, Mail, Lock } from 'lucide-react';
 import { loginSchema, type LoginFormValues } from '@/lib/validations';
 import { signIn } from '@/lib/auth-client';
+import { getLoginRedirect } from '@/lib/login-redirect';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { Input } from '@/components/ui/input';
@@ -32,7 +33,7 @@ export function LoginForm({ requiredRole }: { requiredRole?: 'admin' | 'user' })
   const isAdmin = requiredRole === 'admin';
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get('callbackUrl') ?? (isAdmin ? '/admin/users' : '/pharmacy');
+  const callbackUrl = getLoginRedirect(searchParams.get('callbackUrl'), isAdmin ? '/admin/users' : '/pharmacy');
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState('');
 
