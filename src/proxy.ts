@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionCookie } from "better-auth/cookies";
 import { checkRateLimit } from "@/lib/upstash";
 
-const PUBLIC_PATHS = ["/login", "/admin/login", "/api/auth", "/setup", "/api/setup", "/api/telegram"];
+const PUBLIC_PATHS = ["/login", "/admin/login", "/api/auth", "/api/telegram"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
