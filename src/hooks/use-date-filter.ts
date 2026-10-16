@@ -73,18 +73,23 @@ function readStoredFilter(storageKey: string): FilterState | null {
 
 function canonicalParams(current: URLSearchParams, state: FilterState) {
   const params = new URLSearchParams(current.toString());
-  FILTER_PARAMS.forEach((key) => params.delete(key));
-  params.set("period", state.period);
-  if (state.period === "overall") return params;
+  const desired = new URLSearchParams({ period: state.period });
   if (state.period === "custom") {
-    params.set("from", state.customFrom);
-    params.set("to", state.customTo);
-    return params;
+    desired.set("from", state.customFrom);
+    desired.set("to", state.customTo);
+  } else if (state.period !== "overall") {
+    desired.set("year", String(state.year));
+    if (state.period !== "year") desired.set("month", String(state.month));
+    if (state.period === "day") desired.set("day", String(state.day));
   }
-  params.set("year", String(state.year));
-  if (state.period === "year") return params;
-  params.set("month", String(state.month));
-  if (state.period === "day") params.set("day", String(state.day));
+  // Preserve existing parameter positions. Deleting and re-appending the date
+  // keys makes a nuqs tab/page update look like a date change and starts a
+  // competing server navigation with an older URL snapshot.
+  FILTER_PARAMS.forEach((key) => {
+    const value = desired.get(key);
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  });
   return params;
 }
 
