@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { convertBurmeseDigits } from "@/lib/text-normalize";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -195,14 +196,18 @@ function PharmaTargetsDialog({
     setArLimit(initial.targetArLimit?.toString() ?? "");
     setApLimit(initial.targetApLimit?.toString() ?? "");
   }
-  const num = (v: string) => (v.trim() === "" ? null : Number(v));
+  const num = (v: string) => (v.trim() === "" ? null : Number(convertBurmeseDigits(v).replace(/,/g, "")));
   const fields: Array<{ label: string; hint: string; value: string; set: (v: string) => void }> = [
-    { label: "Sales target (MMK)", hint: "Monthly sales goal", value: sales, set: setSales },
+    { label: "Sales target (MMK)", hint: "Sales goal for this period", value: sales, set: setSales },
     { label: "Collection target (MMK)", hint: "Expected AR collection", value: collection, set: setCollection },
-    { label: "Purchase limit (MMK)", hint: "Monthly purchase ceiling", value: expense, set: setExpense },
+    { label: "Purchase limit (MMK)", hint: "Purchase ceiling for this period", value: expense, set: setExpense },
     { label: "AR overdue limit (MMK)", hint: "Overdue above this = Over Limit", value: arLimit, set: setArLimit },
     { label: "AP overdue limit (MMK)", hint: "Overdue above this = Over Limit", value: apLimit, set: setApLimit },
   ];
+  const invalid = fields.some((field) => {
+    const value = num(field.value);
+    return value !== null && (!Number.isFinite(value) || value < 0);
+  });
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -228,8 +233,9 @@ function PharmaTargetsDialog({
               />
             </div>
           ))}
+          {invalid && <p role="alert" className="text-xs text-destructive">Enter a valid non-negative amount, or leave blank to clear.</p>}
           <Button
-            disabled={saving}
+            disabled={saving || invalid}
             onClick={() =>
               onSave({
                 targetSalesAmount: num(sales),
@@ -264,7 +270,7 @@ function PharmaSuggestions({ periodKey, enabled = true }: { periodKey?: string; 
             Smart Suggestions
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Key actions for {rec.data?.month ?? "this period"}, calculated automatically. AR/AP/stock signals are as of today.
+            Key actions for {rec.data?.month ?? "this period"}, calculated automatically. Based on the selected period and available balance history.
           </p>
         </div>
         <Button
@@ -331,7 +337,7 @@ function OperationalAlerts({ alerts }: { alerts: NonNullable<import("@/hooks/use
             {requiresAttention ? "Attention queue" : "Operations status"}
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            {requiresAttention ? "Prioritised work that needs a decision today." : "No operational exceptions need action right now."}
+            {requiresAttention ? "Priorities based on the selected period." : "No operational exceptions need action right now."}
           </p>
         </div>
         <Badge variant={requiresAttention ? "secondary" : "outline"}>
@@ -402,7 +408,7 @@ function OverviewView() {
       {q.isError && <ErrorBox message="Overview load မရပါ — previous import လုပ်ပြီးပြီလား စစ်ပါ။" onRetry={() => q.refetch()} />}
       {d && (
         <>
-          <PharmaTargetsDialog
+          {targetsOpen && <PharmaTargetsDialog
             open={targetsOpen}
             onOpenChange={setTargetsOpen}
             anchor={d.anchor}
@@ -420,19 +426,19 @@ function OverviewView() {
                 { onSuccess: () => setTargetsOpen(false) },
               );
             }}
-          />
+          />}
           <FadeIn className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <ServiceKpiCard
               title="Sales" value={mmk(d.sales.total)} target={d.sales.target ? `${mmk(d.sales.target)} MMK` : "No target"}
               expected={d.sales.kpi.expected != null ? `Expected: ${mmk(d.sales.kpi.expected)} · ${d.sales.lines} lines` : `${d.sales.lines} lines`}
               status={d.sales.kpi.status} statusTone={d.sales.kpi.tone === "emerald" ? "good" : d.sales.kpi.tone === "red" ? "bad" : "muted"}
-              icon={TrendingUp} progressPercent={d.sales.kpi.progress} accent={CARD_ACCENTS.sky}
+              icon={TrendingUp} progressPercent={d.sales.kpi.progress} markerPercent={d.ratio * 100} accent={CARD_ACCENTS.sky}
             />
             <ServiceKpiCard
               title="Collection" value={mmk(d.collection.total)} target={d.collection.target ? `${mmk(d.collection.target)} MMK` : "No target"}
               expected={d.collection.kpi.expected != null ? `Expected: ${mmk(d.collection.kpi.expected)} · ${d.collection.invoices} paid` : `${d.collection.invoices} invoices paid`}
               status={d.collection.kpi.status} statusTone={d.collection.kpi.tone === "emerald" ? "good" : d.collection.kpi.tone === "red" ? "bad" : "muted"}
-              icon={Wallet} progressPercent={d.collection.kpi.progress} accent={CARD_ACCENTS.emerald}
+              icon={Wallet} progressPercent={d.collection.kpi.progress} markerPercent={d.ratio * 100} accent={CARD_ACCENTS.emerald}
             />
             <ServiceKpiCard
               title="Purchases" value={mmk(d.purchases.total)} target={d.purchases.target ? `${mmk(d.purchases.target)} MMK` : "No limit"}
@@ -441,34 +447,39 @@ function OverviewView() {
               icon={ReceiptText} progressPercent={d.purchases.kpi.progress} accent={CARD_ACCENTS.red}
             />
             <ServiceKpiCard
-              title="AR Outstanding" value={mmk(d.ar.outstanding)} target={d.ar.limit != null ? `${mmk(d.ar.limit)} MMK` : "No limit"}
-              expected={`Overdue ${mmk(d.ar.overdue)} · ${d.ar.openCount} open`} status={d.ar.kpi.status}
-              statusTone={d.ar.kpi.tone === "emerald" ? "good" : d.ar.kpi.tone === "red" ? "bad" : "muted"}
-              icon={Users} progressPercent={d.ar.kpi.tone === "slate" ? 0 : 100 - Math.min(100, d.ar.outstanding > 0 ? Math.round((d.ar.overdue / d.ar.outstanding) * 100) : 0)}
+              title={d.ar.available === false ? "AR Outstanding" : `AR Outstanding · ${d.ar.asOf}`} value={d.ar.available === false ? "—" : mmk(d.ar.outstanding)} target={d.ar.limit != null ? `${mmk(d.ar.limit)} MMK` : "No limit"}
+              expected={d.ar.available === false ? "Historical balance unavailable\nPayment dates or invoice dates missing" : `Overdue ${mmk(d.ar.overdue)}\n${mmk(d.ar.openCount)} open invoices`} status={d.ar.available === false ? "Unavailable" : d.ar.kpi.status}
+              statusTone={d.ar.available === false ? "muted" : d.ar.kpi.tone === "emerald" ? "good" : d.ar.kpi.tone === "red" ? "bad" : "muted"}
+              emptyState={d.ar.available === false ? {
+                asOf: d.ar.asOf,
+                description: "ဒီရက်အထိ ရရန်ကျန်ငွေတွက်ဖို့ ငွေရှင်းမှတ်တမ်း လိုအပ်ပါတယ်။",
+                href: "/pharmacy/ar", actionLabel: "View customer invoices",
+              } : undefined}
+              icon={Users} progressPercent={d.ar.available === false ? 0 : d.ar.kpi.progress}
               accent={CARD_ACCENTS.amber}
             />
             <ServiceKpiCard
               title="AP Outstanding" value={mmk(d.ap.outstanding)} target={d.ap.limit != null ? `${mmk(d.ap.limit)} MMK` : "No limit"}
-              expected={`Overdue ${mmk(d.ap.overdue)} · ${d.ap.openCount} open`} status={d.ap.kpi.status}
+              expected={`Overdue ${mmk(d.ap.overdue)}\n${mmk(d.ap.openCount)} open invoices · selected invoice period`} status={d.ap.kpi.status}
               statusTone={d.ap.kpi.tone === "emerald" ? "good" : d.ap.kpi.tone === "red" ? "bad" : "muted"}
-              icon={Truck} progressPercent={d.ap.kpi.tone === "slate" ? 0 : 100 - Math.min(100, d.ap.outstanding > 0 ? Math.round((d.ap.overdue / d.ap.outstanding) * 100) : 0)}
+              icon={Truck} progressPercent={d.ap.kpi.progress}
               accent={CARD_ACCENTS.orange}
             />
             <ServiceKpiCard
               title="Stock Value" value={mmk(d.stock.value)} target={`${d.stock.skus} SKUs`}
               expected="latest snapshot" status={d.stock.skus > 0 ? "Tracked" : "No stock yet"}
               statusTone={d.stock.skus > 0 ? "good" : "muted"}
-              icon={Package} progressPercent={d.stock.skus > 0 ? 68 : 0} accent={CARD_ACCENTS.violet}
+              icon={Package} accent={CARD_ACCENTS.violet}
             />
             <ServiceKpiCard
-              title="Collection − Purchases" value={mmk(d.cash.net)} target={d.cash.label}
+              title="Collection − Purchases" value={mmk(d.cash.net)} target=""
               expected="Invoice comparison · not cash balance" status={d.cash.net >= 0 ? "Positive" : "Negative"}
               statusTone={d.cash.net >= 0 ? "good" : "bad"}
-              icon={DollarSign} progressPercent={d.cash.net >= 0 ? 96 : 28} accent={CARD_ACCENTS.indigo}
+              icon={DollarSign} accent={CARD_ACCENTS.indigo}
             />
           </FadeIn>
-          {d.alerts && d.alerts.length > 0 && <OperationalAlerts alerts={d.alerts} />}
-          <PharmaSuggestions periodKey={periodKey} enabled={filter.isReady} />
+          {d.hasData && d.alerts && d.alerts.length > 0 && <OperationalAlerts alerts={d.alerts} />}
+          {d.hasData && <PharmaSuggestions periodKey={periodKey} enabled={filter.isReady} />}
           <div className="grid gap-6 xl:grid-cols-2">
           {(d.companyHealth ?? []).length > 0 && (
             <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
@@ -490,7 +501,7 @@ function OverviewView() {
                   </TableHeader>
                   <TableBody>
                     {(d.companyHealth ?? []).map((c) => {
-                      const weak = (c.momPct != null && c.momPct < -10) || c.arOverdue > 0;
+                      const weak = (c.momPct != null && c.momPct < -10) || (d.ar.available !== false && c.arOverdue > 0);
                       return (
                         <TableRow key={c.company}>
                           <TableCell className="font-bold text-sm max-w-56 truncate" title={c.company}>{c.company}</TableCell>
@@ -498,8 +509,8 @@ function OverviewView() {
                           <TableCell className={`text-right font-bold ${c.momPct != null && c.momPct < -10 ? "text-red-500" : c.momPct != null && c.momPct > 0 ? "text-emerald-500" : "text-muted-foreground"}`}>
                             {c.momPct == null ? "—" : `${c.momPct > 0 ? "+" : ""}${c.momPct}%`}
                           </TableCell>
-                          <TableCell className={`text-right font-bold ${c.arOverdue > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
-                            {c.arOverdue > 0 ? mmk(c.arOverdue) : "—"}
+                          <TableCell className={`text-right font-bold ${d.ar.available !== false && c.arOverdue > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
+                            {d.ar.available === false ? "Unavailable" : c.arOverdue > 0 ? mmk(c.arOverdue) : "—"}
                           </TableCell>
                           <TableCell>
                             <Badge variant={weak ? "destructive" : "secondary"}>{weak ? "Weak" : "Strong"}</Badge>
@@ -551,16 +562,14 @@ function OverviewView() {
               </div>
               <CommerceBarChart unit="MMK" data={(d.salesTrend ?? []).map((t) => ({ label: t.month, value: t.amount }))} />
           </section>
-          {(d.cashflow ?? []).length > 0 && (
-            <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
+          <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
                 <div className="flex justify-between items-center mb-4 border-b-2 border-border pb-3">
                   <h3 className="font-bold text-foreground text-sm tracking-wide uppercase flex items-center gap-2">
-                    <DollarSign className="w-4 h-4 text-indigo-500" />Collections vs purchases (6 mo)
+                    <DollarSign className="w-4 h-4 text-indigo-500" />Collections vs purchases
                   </h3>
                 </div>
                 <FinanceTimelineChart monthly={(d.cashflow ?? []).map((c) => [c.month, c.collection, c.purchases] as [string, number, number])} />
             </section>
-          )}
         </>
       )}
     </div>
@@ -590,10 +599,10 @@ function SalesView() {
       {d && (
         <>
           <FadeIn className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
-            <ServiceKpiCard title="Sales Amount" value={mmk(d.totals.amount)} target="MMK" expected={`${mmk(d.totals.lines)} transactions`} status={`${d.byChannel.length} channels`} statusTone="muted" icon={TrendingUp} progressPercent={100} accent={CARD_ACCENTS.sky} />
-            <ServiceKpiCard title="Qty Sold" value={mmk(d.totals.qty)} target="units" expected={`${mmk(d.totals.lines)} lines`} status="Tracked" statusTone="good" icon={Package} progressPercent={68} accent={CARD_ACCENTS.emerald} />
-            <ServiceKpiCard title="Transactions" value={mmk(d.totals.lines)} target="lines" expected={d.byCustomer.length > 0 ? `Top customer ${mmk(d.byCustomer[0].amount)}` : "No customers"} status="Tracked" statusTone="good" icon={Users} progressPercent={68} accent={CARD_ACCENTS.violet} />
-            <ServiceKpiCard title="Channels" value={String(d.byChannel.length)} target={d.byChannel.map((c) => c.key).join(" · ")} expected={d.byChannel.map((c) => `${c.key} ${mmk(c.amount)}`).join(" · ")} status="Active" statusTone="good" icon={Truck} progressPercent={100} accent={CARD_ACCENTS.amber} />
+            <FinanceKpiCard label="Sales Amount" value={mmk(d.totals.amount)} unit="MMK" detail={`${mmk(d.totals.lines)} transactions`} status={`${d.byChannel.length} channels`} icon={TrendingUp} accentClass="border-l-sky-500" />
+            <FinanceKpiCard label="Qty Sold" value={mmk(d.totals.qty)} unit="units" detail={`${mmk(d.totals.lines)} lines`} status="Tracked" icon={Package} accentClass="border-l-emerald-500" />
+            <FinanceKpiCard label="Transactions" value={mmk(d.totals.lines)} unit="lines" detail={d.byCustomer.length > 0 ? `Top customer ${mmk(d.byCustomer[0].amount)}` : "No customers"} status="Tracked" icon={Users} accentClass="border-l-violet-500" />
+            <FinanceKpiCard label="Channels" value={String(d.byChannel.length)} unit={d.byChannel.map((c) => c.key).join(" · ")} detail={d.byChannel.map((c) => `${c.key} ${mmk(c.amount)}`).join(" · ")} status="Active" icon={Truck} accentClass="border-l-amber-500" />
           </FadeIn>
           <section className="bg-card border-2 border-slate-300 dark:border-slate-800 p-6 rounded-xl shadow-sm">
             <div className="flex justify-between items-center mb-6 border-b-2 border-border pb-4">

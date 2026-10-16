@@ -1,10 +1,16 @@
 // @vitest-environment node
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-const mocks = vi.hoisted(() => ({ generate: vi.fn(), aggregate: vi.fn<(args: { where: { saleDate: { gte: Date; lt: Date } } }) => Promise<{ _sum: { amount: number }; _count: number }>>().mockResolvedValue({ _sum: { amount: 100 }, _count: 1 }) }));
+const mocks = vi.hoisted(() => ({ generate: vi.fn(), overview: vi.fn() }));
+vi.mock("@/lib/pharmacy-overview", () => ({ getPharmacyOverviewResponse: mocks.overview }));
+const facts = {
+  hasData: true, anchor: { label: "2026-06" }, sales: { total: 100 }, collection: { total: 0 }, purchases: { total: 0 },
+  ar: { available: true, outstanding: 0, asOf: "2026-06-30" }, ap: { available: true, outstanding: 0 },
+  alerts: [{ title: "Stock-out SKUs: 113", detail: "Review reorder", tone: "amber", action: { href: "/pharmacy/inventory" } }],
+};
+beforeEach(() => { mocks.overview.mockImplementation(async () => Response.json(facts)); });
 vi.mock("@/lib/auth", () => ({ auth: { api: { getSession: async () => ({ user: { id: "test" } }) } } }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
-  salesLine: { aggregate: mocks.aggregate },
   $queryRawTyped: async (query: { sql: string }) => query.sql.includes("AS supplier") ? [] : [{ n: BigInt(113) }],
   receivable: { findMany: async () => [] }, purchaseInvoice: { findMany: async () => [] },
   stockSnapshot: { count: async () => 0 }, expiryLot: { count: async () => 0 },
@@ -26,10 +32,17 @@ it("returns heuristic recommendations and aborts when the AI stalls", async () =
     expect(mocks.generate.mock.calls[0][0].config.abortSignal.aborted).toBe(true);
   } finally { vi.useRealTimers(); }
 });
-it("bounds the selected month in UTC and uses latest stock-out SKUs", async () => {
+it("uses selected-period overview facts for suggestions", async () => {
   mocks.generate.mockResolvedValue({ text: "[]" });
-  const body = await (await GET(new NextRequest("http://localhost/api/pharmacy/recommendations?year=2026&month=6"))).json();
-  expect(mocks.aggregate.mock.calls[0][0].where.saleDate).toEqual({ gte: new Date("2026-06-01"), lt: new Date("2026-07-01") });
-  expect(mocks.aggregate.mock.calls[1][0].where.saleDate).toEqual({ gte: new Date("2026-05-01"), lt: new Date("2026-06-01") });
+  const request = new NextRequest("http://localhost/api/pharmacy/recommendations?period=year&year=2024");
+  const body = await (await GET(request)).json();
+  expect(mocks.overview).toHaveBeenCalledWith(request);
   expect(body.recommendations.some((row: { title: string }) => row.title === "Stock-out SKUs: 113")).toBe(true);
+});
+it("skips AI and suggestions for empty periods", async () => {
+  mocks.generate.mockClear();
+  mocks.overview.mockResolvedValue(Response.json({ ...facts, hasData: false, alerts: [] }));
+  const body = await (await GET(new NextRequest("http://localhost/api/pharmacy/recommendations?period=year&year=2024"))).json();
+  expect(body.recommendations).toEqual([]);
+  expect(mocks.generate).not.toHaveBeenCalled();
 });

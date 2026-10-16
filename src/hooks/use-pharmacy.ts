@@ -45,6 +45,7 @@ export interface CompanyHealth {
 }
 
 export interface PharmacyOverview {
+  hasData: boolean;
   period: string;
   anchor: { period: "month" | "year"; year: number; month: number; label: string };
   ratio: number;
@@ -59,8 +60,8 @@ export interface PharmacyOverview {
   comparison?: { label: string; currentStart: string; currentEnd: string; previousStart: string; previousEnd: string };
   collection: { total: number; invoices: number; target: number | null; kpi: PharmaKpi };
   purchases: { total: number; invoices: number; target: number | null; kpi: PharmaKpi };
-  ar: { outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
-  ap: { outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
+  ar: { available: boolean; asOf: string; outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
+  ap: { available: boolean; asOf: string; outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
   stock: { value: number; skus: number; stockout?: number; expiring90?: number };
   cash: { net: number; label: string };
   alerts?: PharmaAlert[];
@@ -195,9 +196,7 @@ export interface PharmaRecommendation {
 }
 
 export function usePharmacyRecommendations(periodKey?: string, enabled = true) {
-  // Month-scoped MoM analysis; AR/AP/stock signals stay global (balances).
-  const m = (periodKey ?? "").match(/^(\d{4})-(\d{2})/);
-  const query = m ? `?year=${m[1]}&month=${Number(m[2])}` : "";
+  const query = periodKey ? `?${periodQuery(periodKey)}` : "";
   return useQuery({
     queryKey: [...pharmacyKeys.all, "recommendations", periodKey ?? "current"] as const,
     meta: { background: true },
@@ -235,8 +234,8 @@ export function useSavePharmacyTargets() {
       if (!res.ok) throw new Error(body.message ?? "Failed to save targets");
       return body;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: pharmacyKeys.all });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: pharmacyKeys.all });
       toast.success("Targets saved");
     },
     onError: (error) => {

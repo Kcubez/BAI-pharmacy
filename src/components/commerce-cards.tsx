@@ -4,6 +4,7 @@
 // KPI cards + AI suggestion panels shared by commerce + pharmacy workspaces.
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, Award, Bot, ChevronDown, ChevronUp } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -12,6 +13,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { CommerceActionRecommendation } from '@/lib/api';
 
 import { useCountUp } from "@/hooks/use-count-up";
+import { convertBurmeseDigits } from '@/lib/text-normalize';
+
+// Values can include grouping separators, units, percentages, or compact suffixes.
+// Check the final metric, not the count-up animation's initial zero.
+function hasNonZeroKpiValue(value: string): boolean {
+  return /[1-9]/.test(convertBurmeseDigits(value));
+}
 
 export type CardTone = 'emerald' | 'red' | 'sky' | 'amber' | 'slate';
 
@@ -49,6 +57,8 @@ export function ServiceKpiCard({
   statusTone,
   icon: Icon,
   progressPercent,
+  markerPercent = 100,
+  emptyState,
   accent,
 }: {
   title: string;
@@ -59,9 +69,11 @@ export function ServiceKpiCard({
   statusTone: 'good' | 'bad' | 'muted';
   icon: LucideIcon;
   progressPercent?: number;
+  markerPercent?: number;
+  emptyState?: { asOf: string; description: string; href: string; actionLabel: string };
   accent: CardAccent;
 }) {
-  const progress = Math.max(0, Math.min(100, progressPercent ?? 0));
+  const progress = Number.isFinite(progressPercent) ? Math.max(0, Math.min(100, progressPercent ?? 0)) : 0;
   // Count-up for pure numeric values ("2,268,169,348", "-1,020"); static otherwise.
   const numeric = /^[−\d,.\s-]+$/.test(value) ? Number(value.replace(/[^0-9.-]/g, "")) : NaN;
   const animated = useCountUp(Number.isFinite(numeric) ? numeric : 0);
@@ -72,7 +84,9 @@ export function ServiceKpiCard({
       : statusTone === 'bad'
         ? 'text-red-600 dark:text-red-400'
         : 'text-slate-500 dark:text-slate-400';
-  const hasTarget = !/^(No target|No limit|—)$/i.test(target.trim());
+  const hasTarget = target.trim().length > 0 && !/^(No target|No limit|—)$/i.test(target.trim());
+  const hasProgressTarget = hasTarget && Number.isFinite(progressPercent);
+  const progressFill = hasProgressTarget && hasNonZeroKpiValue(value) ? progress : 0;
   // Uniform size on every card — length-based scaling made "0" look
   // giant next to smaller long numbers. text-2xl fits 13-digit MMK.
   const valueSize = 'text-2xl';
@@ -85,18 +99,31 @@ export function ServiceKpiCard({
           <Icon className={`size-4 ${accent.iconText}`} aria-hidden="true" />
         </div>
       </div>
+      {emptyState ? (
+        <div className="mt-3 flex min-h-32 flex-col items-start">
+          <p className="text-xs text-muted-foreground">As of {emptyState.asOf}</p>
+          <p className="mt-2 text-lg font-semibold leading-snug text-foreground">Payment history needed</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">{emptyState.description}</p>
+          <Link href={emptyState.href} className="mt-auto inline-flex min-h-9 items-center pt-2 text-xs font-semibold text-primary underline-offset-4 hover:underline focus-visible:rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+            {emptyState.actionLabel} →
+          </Link>
+        </div>
+      ) : (
+        <>
       <p className={`${valueSize} mt-3 break-words leading-tight font-bold tracking-[-0.025em] text-foreground tabular-nums`}>
         {display}
         {hasTarget && <span className={`${targetSize} ml-1 font-medium text-muted-foreground whitespace-nowrap`}>/ {target}</span>}
       </p>
-      <div className="relative mt-4 h-1.5 w-full overflow-visible rounded-full bg-muted">
-        <div className={`h-full rounded-full ${accent.fill}`} style={{ width: `${hasTarget ? progress : 0}%` }} />
-        {hasTarget && <span className="absolute top-[-3px] right-0 bottom-[-3px] w-px rounded bg-foreground/70" />}
+      <div role="progressbar" aria-label={`${title} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressFill} aria-valuetext={hasProgressTarget ? `${progressFill}% of target or limit` : "No target set"} className="relative mt-4 h-1.5 w-full overflow-visible rounded-full bg-muted">
+        <div className={`h-full rounded-full ${accent.fill}`} style={{ width: `${progressFill}%` }} />
+        {hasProgressTarget && <span className="absolute top-[-3px] bottom-[-3px] w-px rounded bg-foreground/70" style={{ left: `${Number.isFinite(markerPercent) ? Math.max(0, Math.min(100, markerPercent)) : 0}%` }} />}
       </div>
-      <div className="mt-3 flex items-center justify-between gap-3 text-xs">
-        <span className="truncate text-muted-foreground">{expected}</span>
-        <span className={`${statusClass} whitespace-nowrap`}>{status}</span>
+      <div className="mt-3 flex min-h-10 items-start justify-between gap-3 text-xs leading-5">
+        <span className="min-w-0 whitespace-pre-line break-words text-muted-foreground">{expected}</span>
+        <span className={`${statusClass} shrink-0 whitespace-nowrap`}>{status}</span>
       </div>
+        </>
+      )}
     </section>
   );
 }
@@ -127,7 +154,8 @@ export function ProgressCard({
     amber: 'bg-amber-500 text-amber-600',
     slate: 'bg-slate-400 text-slate-500',
   }[tone];
-  const progress = progressPercent ?? (tone === 'emerald' ? 96 : tone === 'red' ? 28 : tone === 'amber' ? 62 : tone === 'slate' ? 0 : 68);
+  const progress = Math.max(0, Math.min(100, progressPercent ?? 0));
+  const showProgress = hasNonZeroKpiValue(value) && Number.isFinite(progressPercent) && progress > 0;
 
   // Uniform size (commerce original text-3xl callers pass short values).
   const valueSize = 'text-3xl';
@@ -143,10 +171,10 @@ export function ProgressCard({
         <p className={`${valueSize} break-words leading-tight font-bold tracking-[-0.025em] text-foreground`}>
           {value} <span className="text-sm font-medium text-muted-foreground">/ {target}</span>
         </p>
-        <div className="relative mt-5 h-2 w-full overflow-visible rounded-full bg-muted">
+        {showProgress && <div className="relative mt-5 h-2 w-full overflow-visible rounded-full bg-muted">
           <div className={`h-full rounded-full ${colors.split(' ')[0]}`} style={{ width: `${progress}%` }} />
           <span className="absolute top-[-4px] right-0 bottom-[-4px] w-px rounded bg-foreground/70" />
-        </div>
+        </div>}
         <div className="mt-4 flex items-center justify-between gap-3 text-xs">
           <span className="text-muted-foreground">{expected}</span>
           <span className={colors.split(' ')[1]}>{status}</span>

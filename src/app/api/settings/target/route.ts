@@ -1,6 +1,26 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import { bumpCacheVersion } from "@/lib/upstash";
+import { z } from "zod";
+
+const targetAmount = z.preprocess(
+  (value) => value === null || (typeof value === "string" && value.trim() === "") ? null : value,
+  z.coerce.number().finite().nonnegative().nullable(),
+).optional();
+const targetSchema = z.object({
+  period: z.enum(["month", "year"]),
+  year: z.coerce.number().int().min(1900).max(2100),
+  month: z.coerce.number().int().min(0).max(12),
+  targetSalesAmount: targetAmount,
+  targetExpenseAmount: targetAmount,
+  targetDemandCount: targetAmount,
+  targetAppointments: targetAmount,
+  targetNewCustomers: targetAmount,
+  targetCollectionAmount: targetAmount,
+  targetArLimit: targetAmount,
+  targetApLimit: targetAmount,
+}).refine((value) => value.period === "year" || value.month >= 1, { message: "Select a valid month" });
 
 // GET /api/settings/target — fetch target for specific period
 export async function GET(req: NextRequest) {
@@ -50,17 +70,10 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await req.json();
-  const { period, year, month: monthParam, targetSalesAmount, targetExpenseAmount, targetDemandCount, targetAppointments, targetNewCustomers, targetCollectionAmount, targetArLimit, targetApLimit } = body;
-  const num = (v: unknown) => (v === "" || v == null ? null : Number(v));
-
-  const parsedPeriod = period === "year" ? "year" : "month";
-  const parsedYear = Number(year);
-  const parsedMonth = parsedPeriod === "year" ? 0 : Number(monthParam || 1);
-
-  if (isNaN(parsedYear)) {
-    return NextResponse.json({ message: "Invalid year" }, { status: 400 });
-  }
+  const parsed = targetSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ message: "Enter valid non-negative targets and a valid period" }, { status: 400 });
+  const { period: parsedPeriod, year: parsedYear, month, ...values } = parsed.data;
+  const parsedMonth = parsedPeriod === "year" ? 0 : month;
 
   try {
     const updated = await prisma.periodTarget.upsert({
@@ -77,27 +90,12 @@ export async function PUT(req: NextRequest) {
         period: parsedPeriod,
         year: parsedYear,
         month: parsedMonth,
-        targetSalesAmount: num(targetSalesAmount),
-        targetExpenseAmount: num(targetExpenseAmount),
-        targetDemandCount: num(targetDemandCount),
-        targetAppointments: num(targetAppointments),
-        targetNewCustomers: num(targetNewCustomers),
-        targetCollectionAmount: num(targetCollectionAmount),
-        targetArLimit: num(targetArLimit),
-        targetApLimit: num(targetApLimit),
+        ...values,
       },
-      update: {
-        targetSalesAmount: num(targetSalesAmount),
-        targetExpenseAmount: num(targetExpenseAmount),
-        targetDemandCount: num(targetDemandCount),
-        targetAppointments: num(targetAppointments),
-        targetNewCustomers: num(targetNewCustomers),
-        targetCollectionAmount: num(targetCollectionAmount),
-        targetArLimit: num(targetArLimit),
-        targetApLimit: num(targetApLimit),
-      },
+      update: values,
     });
 
+    await bumpCacheVersion("pharmacy", session.user.id);
     return NextResponse.json({ target: updated });
   } catch (error) {
     console.error("Failed to save target settings:", error);
