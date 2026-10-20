@@ -14,10 +14,14 @@ export function inventoryQueries(input: z.infer<typeof inventoryOptions> & {
   const days = Math.max(1, Math.round((until.getTime() - since.getTime()) / 86400000));
   const search = `%${input.search.replace(/[\\%_]/g, "\\$&")}%`;
   const ctes = Prisma.sql`WITH snapshots AS (
-    SELECT DISTINCT ON (item_code) item_code,item_name,qty,unit_price,amount
+    SELECT item_code,item_name,qty,unit_price,amount
     FROM stock_snapshot WHERE user_id=${userId} AND deleted_at IS NULL
-      AND (year,month)<=(${asOf.getUTCFullYear()},${asOf.getUTCMonth()+1})
-    ORDER BY item_code,year DESC,month DESC,id DESC
+      AND (year,month) = (
+        SELECT year,month FROM stock_snapshot WHERE user_id=${userId} AND deleted_at IS NULL
+          AND (year,month)<=(${asOf.getUTCFullYear()},${asOf.getUTCMonth()+1})
+          AND (make_date(year,month,1) + interval '1 month - 1 day') <= ${asOf}::date
+        ORDER BY year DESC,month DESC LIMIT 1
+      )
   ), sales AS MATERIALIZED (
     SELECT item_code,lower(trim(item_name)) AS name,sale_qty,sale_date FROM sales_line
     WHERE user_id=${userId} AND deleted_at IS NULL AND sale_date>=${since} AND sale_date<${until}

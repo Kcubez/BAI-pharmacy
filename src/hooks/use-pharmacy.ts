@@ -11,6 +11,7 @@ export const pharmacyKeys = {
   inventory: (period: string, page = 1, limit = 10) => [...pharmacyKeys.all, "inventory", period, page, limit] as const,
   payables: (period: string, page = 1, limit = 10) => [...pharmacyKeys.all, "payables", period, page, limit] as const,
   team: (period: string) => [...pharmacyKeys.all, "team", period] as const,
+  resetPreview: () => [...pharmacyKeys.all, "reset-preview"] as const,
 };
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
@@ -60,9 +61,9 @@ export interface PharmacyOverview {
   comparison?: { label: string; currentStart: string; currentEnd: string; previousStart: string; previousEnd: string };
   collection: { total: number; invoices: number; target: number | null; kpi: PharmaKpi };
   purchases: { total: number; invoices: number; target: number | null; kpi: PharmaKpi };
-  ar: { available: boolean; asOf: string; outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
+  ar: { available: boolean; asOf: string; dataPeriod?: string | null; outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
   ap: { available: boolean; asOf: string; outstanding: number; overdue: number; openCount: number; limit: number | null; kpi: PharmaKpi };
-  stock: { value: number; skus: number; stockout?: number; expiring90?: number };
+  stock: { period?: string | null; asOf?: string; value: number; skus: number; stockout?: number; expiring90?: number };
   cash: { net: number; label: string };
   alerts?: PharmaAlert[];
   companyHealth?: CompanyHealth[];
@@ -136,7 +137,7 @@ export interface ExpiryRow {
 
 export interface PharmacyInventory {
   total: number;
-  totals: { skus: number; value: number; stockout: number; belowMin?: number; overstock: number; slow: number; reorder: number; expired?: number; expiring90?: number };
+  totals: { stockPeriod?: string | null; skus: number; value: number; stockout: number; belowMin?: number; overstock: number; slow: number; reorder: number; expired?: number; expiring90?: number };
   page: number;
   limit: number;
   filteredTotals?: { stockout: number; belowMin: number; overstock: number; slow: number; reorder: number };
@@ -350,18 +351,30 @@ export interface PharmaDeleteResult {
   total: number;
 }
 
+export function usePharmacyResetPreview() {
+  return useQuery({
+    queryKey: pharmacyKeys.resetPreview(),
+    queryFn: ({ signal }) => getJson<{ counts: Record<string, number>; total: number }>("/api/pharmacy/delete-all", signal),
+    staleTime: 0,
+  });
+}
+
 export function usePharmacyDeleteAll() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (scope: PharmaDeleteScope) => {
-      const res = await fetch(`/api/pharmacy/delete-all?scope=${scope}`, { method: "DELETE" });
+      const res = await fetch(`/api/pharmacy/delete-all?scope=${scope}`, {
+        method: "DELETE",
+        ...(scope === "all" ? { headers: { "x-pharmacy-confirmation": "RESET" } } : {}),
+      });
       const body = (await res.json().catch(() => ({}))) as PharmaDeleteResult & { message?: string };
       if (!res.ok) throw new Error(body.message ?? "Delete failed");
       return body;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: pharmacyKeys.all });
-      toast.success(`Deleted ${data.total} rows (${data.scope}) — restorable`);
+      queryClient.invalidateQueries({ queryKey: ["trash"] });
+      toast.success(`Moved ${data.total} records to Trash`);
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "Delete failed");

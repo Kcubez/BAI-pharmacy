@@ -554,21 +554,36 @@ export function parseStockSheet(
   year: number,
   month: number,
 ): ParsedStock[] {
-  return sheet.rows.flatMap((row) => {
+  const parsed = sheet.rows.flatMap((row) => {
     const get = makeRowAccessor(row);
-    const itemCode = get("item code") ? String(get("item code")).trim() : null;
+    const itemCode = normalizeCode(get("item code"));
     if (!itemCode) return [];
     return [
       {
-        importKey: `ph:stock:${userId}:${year}-${month}:${itemCode}`,
+        importKey: `ph:stock:${userId}:${year}-${month}:${String(get("item code")).trim()}`,
         itemCode,
         itemName: get("item name") ? String(get("item name")).trim() : null,
         qty: toNumber(get("qty")) ?? 0,
         unitPrice: toNumber(get("unit price")),
-        amount: toNumber(get("amount")),
+        amount: toNumber(get("amount")) ?? (
+          toNumber(get("qty")) != null && toNumber(get("unit price")) != null
+            ? toNumber(get("qty"))! * toNumber(get("unit price"))! : null
+        ),
       },
     ];
   });
+  // The same SKU may have multiple price/lot rows in a monthly snapshot.
+  // Persist one weighted aggregate, rather than silently dropping later rows.
+  const byCode = new Map<string, ParsedStock>();
+  for (const row of parsed) {
+    const existing = byCode.get(row.itemCode);
+    if (!existing) { byCode.set(row.itemCode, { ...row }); continue; }
+    existing.qty += row.qty;
+    existing.amount = existing.amount == null || row.amount == null ? null : existing.amount + row.amount;
+    existing.unitPrice = existing.qty !== 0 && existing.amount != null
+      ? existing.amount / existing.qty : null;
+  }
+  return [...byCode.values()];
 }
 
 export interface ParsedReceivable {
@@ -601,7 +616,7 @@ export function parseReceivableSheet(sheet: SheetRef, userId: string): ParsedRec
       ? "paid"
       : rawStatus.includes("overdue")
         ? "overdue"
-        : rawStatus || "pending";
+        : rawStatus === "unpaid" ? "pending" : rawStatus || "pending";
     return [
       {
         importKey: `ph:ar:${userId}:${customerName ?? "nocust"}:${invoiceNo}`,
@@ -1180,12 +1195,38 @@ export async function importReceivableSheet(
   asOf: Date = new Date(),
   opts?: { overwrite?: boolean },
 ): Promise<ImportSummary> {
-  const rows = parseReceivableSheet(sheet, userId);
-  const ctx = createImportCtx(userId, sourceFileName, sheet.sheetName, opts?.overwrite);
+  const uniqueRows = new Map<string, ParsedReceivable>();
+  for (const row of parseReceivableSheet(sheet, userId)) {
+    if (!uniqueRows.has(row.importKey)) uniqueRows.set(row.importKey, row);
+  }
+  const parsedRows = [...uniqueRows.values()];
+  const incomingPeriod = detectStockPeriod(sheet.sheetName, sourceFileName);
+  const periodKey = (period: { year: number; month: number } | null) =>
+    period ? period.year * 12 + period.month : null;
+  const incomingKey = periodKey(incomingPeriod);
+  const existing = new Map<string, { sourceSheet: string | null; sourceFileName: string | null; deletedAt: Date | null }>();
+  for (let i = 0; i < parsedRows.length; i += 1000) {
+    const found = await prisma.receivable.findMany({
+      where: { userId, importKey: { in: parsedRows.slice(i, i + 1000).map(row => row.importKey) } },
+      select: { importKey: true, sourceSheet: true, sourceFileName: true, deletedAt: true },
+    });
+    for (const record of found) if (record.importKey) existing.set(record.importKey, record);
+  }
+  const rows = parsedRows.filter(row => {
+    const previous = existing.get(row.importKey);
+    if (!previous) return true;
+    if (previous.deletedAt) return false;
+    const previousKey = periodKey(detectStockPeriod(previous.sourceSheet ?? "", previous.sourceFileName ?? ""));
+    if (incomingKey != null && previousKey != null) {
+      return incomingKey > previousKey || (incomingKey === previousKey && Boolean(opts?.overwrite));
+    }
+    return Boolean(opts?.overwrite);
+  });
+  const ctx = createImportCtx(userId, sourceFileName, sheet.sheetName, true);
   const entries: Array<BulkEntry<Prisma.ReceivableCreateManyInput, Prisma.ReceivableUpdateInput>> = [];
   for (const [rowIdx, r] of rows.entries()) {
     let { paymentStatus, overdueDays } = r;
-    if (r.dueDate && paymentStatus !== "paid") {
+    if (r.dueDate && (paymentStatus === "pending" || paymentStatus === "overdue")) {
       const diff = Math.floor((asOf.getTime() - r.dueDate.getTime()) / 86400000);
       if (diff > 0) {
         paymentStatus = "overdue";
@@ -1206,8 +1247,11 @@ export async function importReceivableSheet(
       update: data,
     });
   }
-  return bulkWrite(ctx, "receivable", rows.length, entries,
+  const result = await bulkWrite(ctx, "receivable", rows.length, entries,
     opsFor(userId, prisma.receivable));
+  result.total = parsedRows.length;
+  result.skipped += parsedRows.length - rows.length;
+  return result;
 }
 
 export async function importSalesSheet(

@@ -11,6 +11,7 @@ vi.mock("@/lib/auth", () => ({ auth: { api: { getSession: mocks.session } } }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   periodTarget: { findFirst: mocks.find, upsert: mocks.save },
   salesLine: { groupBy: async () => [] },
+  receivable: { groupBy: async () => [] },
   $queryRawTyped: mocks.raw,
 } }));
 vi.mock("@/generated/prisma/sql", () => Object.fromEntries([

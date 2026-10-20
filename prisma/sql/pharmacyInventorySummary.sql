@@ -8,10 +8,14 @@
 -- @param {DateTime} $8:expiryBefore
 -- @param {DateTime} $9:asOf
 WITH snapshots AS (
-    SELECT DISTINCT ON (item_code) item_code,item_name,qty,unit_price,amount
+    SELECT item_code,item_name,qty,unit_price,amount,year,month
     FROM stock_snapshot WHERE user_id=$1 AND deleted_at IS NULL
-      AND (year,month)<=($2,$3)
-    ORDER BY item_code,year DESC,month DESC,id DESC
+      AND (year,month) = (
+        SELECT year,month FROM stock_snapshot WHERE user_id=$1 AND deleted_at IS NULL
+          AND (year,month)<=($2,$3)
+          AND (make_date(year,month,1) + interval '1 month - 1 day') <= $9::date
+        ORDER BY year DESC,month DESC LIMIT 1
+      )
   ), sales AS MATERIALIZED (
     SELECT item_code,lower(trim(item_name)) AS name,sale_qty,sale_date FROM sales_line
     WHERE user_id=$1 AND deleted_at IS NULL AND sale_date>=$4 AND sale_date<$5
@@ -49,6 +53,7 @@ WITH snapshots AS (
     SELECT *,floor(extract(epoch FROM (exp_date-$9::timestamp))/86400)::integer AS days FROM expiry
   )
 SELECT
+ (SELECT to_char(make_date(year,month,1),'YYYY-MM') FROM snapshots LIMIT 1) AS "stockPeriod",
  (SELECT count(*)::integer FROM inventory) AS skus,
  (SELECT COALESCE(sum(amount),0)::double precision FROM inventory) AS value,
  (SELECT count(*)::integer FROM inventory WHERE flag='stockout') AS stockout,

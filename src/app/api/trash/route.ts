@@ -422,7 +422,22 @@ async function listByType(
   skip: number,
   take: number,
 ) {
-  const where = trashWhere(type, session, dateFrom, dateTo);
+  const pending = isAdminSession(session)
+    ? await prisma.restoreRequest.findMany({
+        where: { recordType: type, status: "pending" },
+        select: { recordId: true },
+      })
+    : [];
+  // Admins need to see the same requested records they may restore. Keep
+  // unrelated tenants' trash private and apply deletion/date filters to both.
+  const where = {
+    ...onlyDeleted,
+    ...dateRangeWhere(dateFrom, dateTo),
+    OR: [
+      scopedWhere(type, session),
+      ...(pending.length ? [{ id: { in: pending.map((request) => request.recordId) } }] : []),
+    ],
+  };
 
   switch (type) {
     case "customers": {
@@ -750,7 +765,7 @@ export async function GET(req: NextRequest) {
   const selectedType: TrashType | null = isTrashType(requestedType) ? requestedType : null;
   const types: readonly TrashType[] = selectedType ? [selectedType] : trashTypes;
   const results = await Promise.all(
-    types.map((type) => listByType(type, session, dateFrom, dateTo, selectedType ? skip : 0, limit)),
+    types.map((type) => listByType(type, session, dateFrom, dateTo, selectedType ? skip : 0, selectedType ? limit : skip + limit)),
   );
 
   const allRecords = results

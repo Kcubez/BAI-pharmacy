@@ -20,13 +20,15 @@ it.skipIf(process.env.MEASURE_INVENTORY !== "1")("reconciles corrected dashboard
     const stockout = pharmacyStockoutCount(userId, now.getUTCFullYear(), now.getUTCMonth()+1);
     expect(Number((await run(stockout.sql, stockout.values)).rows[0].n)).toBe(totals.stockout);
     const reference = (await run(`WITH latest AS (
-      SELECT DISTINCT ON(item_code) qty FROM stock_snapshot WHERE user_id=$1 AND deleted_at IS NULL
-        AND (year,month)<=($2,$3) ORDER BY item_code,year DESC,month DESC,id DESC
+      SELECT qty FROM stock_snapshot WHERE user_id=$1 AND deleted_at IS NULL
+        AND (year,month)=(SELECT year,month FROM stock_snapshot WHERE user_id=$1 AND deleted_at IS NULL
+          AND (year,month)<=($2,$3) ORDER BY year DESC,month DESC LIMIT 1)
     ) SELECT count(*)::integer AS n FROM latest WHERE qty<=0`, [userId,now.getUTCFullYear(),now.getUTCMonth()+1])).rows[0];
     expect(totals.stockout).toBe(reference.n);
     console.log(`Reconciled current stock-out SKUs: ${totals.stockout}; June sales: ${totals.sales}`);
     const fixture = `WITH stock_snapshot(id,item_code,qty,amount,user_id,deleted_at,year,month) AS (
       VALUES ('old','A',0::float8,0::float8,'fixture',NULL::timestamp,2026,5),
+        ('stale-only','C',10,999,'fixture',NULL,2026,5),
         ('new','A',10,100,'fixture',NULL,2026,6), ('out','B',0,0,'fixture',NULL,2026,6),
         ('future','A',0,0,'fixture',NULL,2027,1), ('deleted','D',0,0,'fixture','2026-01-01'::timestamp,2026,6),
         ('other','E',0,0,'other',NULL,2026,6)
@@ -43,12 +45,16 @@ it.skipIf(process.env.MEASURE_INVENTORY !== "1")("reconciles corrected dashboard
     ), `;
     const query = pharmacyOverviewTotals("fixture", start, end, new Date("2026-06-30"), new Date("2026-09-30"));
     const result = (await run(fixture+query.sql.replace(/^WITH /,""),query.values)).rows[0];
-    expect(result).toMatchObject({ sales: 100, salesLines: 1, stockout: 1, stockSkus: 2, stockValue: 100,
+    expect(result).toMatchObject({ sales: 100, salesLines: 1, stockout: 1, stockSkus: 2, stockValue: 100, stockPeriod: "2026-06",
       collected: 100, purchased: 100, collectionInvoices: 2, purchaseInvoices: 2 });
+    const midMonth = pharmacyOverviewTotals("fixture", start, end, new Date("2026-06-15"), new Date("2026-09-15"));
+    const previousSnapshot = (await run(fixture+midMonth.sql.replace(/^WITH /,""),midMonth.values)).rows[0];
+    expect(previousSnapshot.stockPeriod).toBe("2026-05");
+    expect(previousSnapshot.stockValue).toBe(999);
     const counted = pharmacyStockoutCount("fixture",2026,6);
     expect(Number((await run(fixture+counted.sql.replace(/^WITH /,""),counted.values)).rows[0].n)).toBe(1);
     expect(result.collectionByBank).toEqual([{ bank: "Test bank", amount: 100, invoices: 2 }]);
-    const monthly = pharmacyMonthlyCollections("fixture",start);
+    const monthly = pharmacyMonthlyCollections("fixture",start,end);
     expect((await run(fixture.replace(/,\s*$/," ")+monthly.sql,monthly.values)).rows[0])
       .toMatchObject({ month: "2026-06", total: 100 });
   } finally { await pool.end(); }

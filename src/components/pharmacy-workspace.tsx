@@ -43,6 +43,7 @@ import { FinanceKpiCard, ServiceKpiCard, CARD_ACCENTS } from "@/components/comme
 import { PeriodFilterBar, filterToPeriodKey } from "@/components/period-filter-bar";
 import { useDateFilter } from "@/hooks/use-date-filter";
 import { useDebounce } from "@/hooks/use-debounce";
+import { PharmacyDataManagement } from "@/components/pharmacy-data-management";
 import { DestructiveConfirmDialog } from "@/components/ui/destructive-confirm-dialog";
 import {
   usePharmacyAr,
@@ -448,7 +449,7 @@ function OverviewView() {
             />
             <ServiceKpiCard
               title={d.ar.available === false ? "AR Outstanding" : `AR Outstanding · ${d.ar.asOf}`} value={d.ar.available === false ? "—" : mmk(d.ar.outstanding)} target={d.ar.limit != null ? `${mmk(d.ar.limit)} MMK` : "No limit"}
-              expected={d.ar.available === false ? "Historical balance unavailable\nPayment dates or invoice dates missing" : `Overdue ${mmk(d.ar.overdue)}\n${mmk(d.ar.openCount)} open invoices`} status={d.ar.available === false ? "Unavailable" : d.ar.kpi.status}
+              expected={d.ar.available === false ? "Historical balance unavailable\nPayment dates or invoice dates missing" : `Overdue ${mmk(d.ar.overdue)}\n${mmk(d.ar.openCount)} open invoices${d.ar.dataPeriod ? ` · latest source: ${d.ar.dataPeriod}` : ""}`} status={d.ar.available === false ? "Unavailable" : d.ar.kpi.status}
               statusTone={d.ar.available === false ? "muted" : d.ar.kpi.tone === "emerald" ? "good" : d.ar.kpi.tone === "red" ? "bad" : "muted"}
               emptyState={d.ar.available === false ? {
                 asOf: d.ar.asOf,
@@ -466,8 +467,8 @@ function OverviewView() {
               accent={CARD_ACCENTS.orange}
             />
             <ServiceKpiCard
-              title="Stock Value" value={mmk(d.stock.value)} target={`${d.stock.skus} SKUs`}
-              expected="latest snapshot" status={d.stock.skus > 0 ? "Tracked" : "No stock yet"}
+              title={d.stock.period ? `Stock Value · ${d.stock.period}` : "Stock Value"} value={mmk(d.stock.value)} target={`${d.stock.skus} SKUs`}
+              expected={d.stock.period ? `Month-end snapshot · ${d.stock.period}\nLatest available as of ${d.stock.asOf}` : "No snapshot available for this period"} status={d.stock.skus > 0 ? (d.stock.period && d.stock.asOf && d.stock.period < d.stock.asOf.slice(0, 7) ? "Older snapshot" : "Snapshot") : "No stock yet"}
               statusTone={d.stock.skus > 0 ? "good" : "muted"}
               icon={Package} accent={CARD_ACCENTS.violet}
             />
@@ -876,7 +877,7 @@ function InventoryView() {
       {d && (
         <>
           <FadeIn className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
-            <FinanceKpiCard label="SKUs Tracked" value={mmk(d.totals.skus)} unit={`MMK ${mmk(d.totals.value)}`} detail="Current stock valuation" status="Tracked" icon={Package} accentClass="border-l-sky-500" />
+            <FinanceKpiCard label="SKUs Tracked" value={mmk(d.totals.skus)} unit={`MMK ${mmk(d.totals.value)}`} detail={d.totals.stockPeriod ? `Month-end snapshot · ${d.totals.stockPeriod}` : "No stock snapshot available"} status={d.totals.stockPeriod ? "Snapshot" : "No data"} icon={Package} accentClass="border-l-sky-500" />
             <FinanceKpiCard label="Reorder / Below Min" value={`${mmk(d.totals.reorder)} / ${mmk(d.totals.belowMin ?? 0)}`} detail="Suggested replenishment queue" status="Review" icon={Truck} accentClass="border-l-amber-500" />
             <FinanceKpiCard label="Stock-out" value={mmk(d.totals.stockout)} detail="Items unavailable to sell" status={d.totals.stockout > 0 ? "Urgent" : "Clear"} icon={AlertTriangle} accentClass="border-l-red-500" />
             <FinanceKpiCard label="Expired / ≤90d" value={`${mmk(d.totals.expired ?? 0)} / ${mmk(d.totals.expiring90 ?? 0)}`} detail="Expired and near-expiry lots" status="Monitor" icon={Wallet} accentClass="border-l-emerald-500" />
@@ -1501,7 +1502,7 @@ function ImportView() {
           </CardContent>
         </Card>
       )}
-
+      <PharmacyDataManagement importPending={mutation.isPending} />
     </div>
   );
 }

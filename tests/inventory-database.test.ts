@@ -14,13 +14,13 @@ it.skipIf(process.env.MEASURE_INVENTORY !== "1")("executes real inventory querie
     const now = new Date();
     // CTE fixtures shadow physical tables: classification coverage without writes.
     const fixtures = `WITH stock_snapshot(id,item_code,item_name,qty,unit_price,amount,user_id,deleted_at,year,month) AS (
-      VALUES ('1','A','A',0::float8,1::float8,0::float8,'fixture',NULL::timestamp,2026,10),
-        ('2','B','B',2,1,2,'fixture',NULL,2026,10),
-        ('3','C','C',1000,1,1000,'fixture',NULL,2026,10),
-        ('4','D','D',10,1,10,'fixture',NULL,2026,10),
-        ('5','E','E',5,1,5,'fixture',NULL,2026,10),
-        ('6','X','X',0,1,0,'other-owner',NULL,2026,10),
-        ('7','Y','Y',0,1,0,'fixture','2026-01-01'::timestamp,2026,10)
+      VALUES ('1','A','A',0::float8,1::float8,0::float8,'fixture',NULL::timestamp,2026,9),
+        ('2','B','B',2,1,2,'fixture',NULL,2026,9),
+        ('3','C','C',1000,1,1000,'fixture',NULL,2026,9),
+        ('4','D','D',10,1,10,'fixture',NULL,2026,9),
+        ('5','E','E',5,1,5,'fixture',NULL,2026,9),
+        ('6','X','X',0,1,0,'other-owner',NULL,2026,9),
+        ('7','Y','Y',0,1,0,'fixture','2026-01-01'::timestamp,2026,9)
     ), pharma_product(item_code,item_name,min_qty,max_qty,principal,user_id,deleted_at) AS (
       VALUES ('B','B',5::float8,20::float8,NULL::text,'fixture',NULL::timestamp)
     ), sales_line(item_code,item_name,sale_qty,sale_date,user_id,deleted_at) AS (
@@ -55,7 +55,7 @@ it.skipIf(process.env.MEASURE_INVENTORY !== "1")("executes real inventory querie
     expect((await pool.query(fixtures + empty.text.replace(/^WITH /, ""), empty.values)).rows[0]).toEqual({ total: 3, rows: [] });
     const summary = inventoryQueries({ ...fixtureInput, tab: "reorder" }).summary;
     expect((await pool.query(fixtures + summary.sql.replace(/^WITH /, ""), [...summary.values])).rows[0])
-      .toEqual({ skus: 5, value: 1017, stockout: 1, belowMin: 1, overstock: 1, slow: 1, reorder: 3, expired: 0, expiring90: 0 });
+      .toEqual({ stockPeriod: "2026-09", skus: 5, value: 1017, stockout: 1, belowMin: 1, overstock: 1, slow: 1, reorder: 3, expired: 0, expiring90: 0 });
     for (const tab of ["stockout", "reorder", "expiring"] as const) {
       const queries = inventoryQueries({ userId: owner.rows[0].user_id, tab, sort: "cover", page: 1, limit: 10,
         search: "", asOf: now, since: new Date(now.getTime()-90*86400000), until: now });

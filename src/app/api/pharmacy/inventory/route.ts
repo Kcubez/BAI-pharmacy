@@ -21,13 +21,13 @@ export async function GET(req: NextRequest) {
   const { tab, sort } = options.data;
   const now = new Date();
   const query = inventoryQueries({ userId: session.user.id, tab, sort, page, limit, search: params.get("q")?.trim() ?? "",
-    asOf: resolved.period === "overall" ? now : new Date(end.getTime() - 1),
+    asOf: new Date(Math.min(now.getTime(), end.getTime() - 1)),
     since: resolved.period === "overall" ? new Date(now.getTime() - 90 * 86400000) : start,
     until: resolved.period === "overall" ? now : end });
   const [summary, result] = await Promise.all([
-    cached("pharmacy", session.user.id, `inventory-summary-v2:${resolved.period}:${start.toISOString()}:${end.toISOString()}`, 180,
+    cached("pharmacy", session.user.id, `inventory-summary-v3:${resolved.period}:${start.toISOString()}:${end.toISOString()}`, 180,
       async () => timing.measure("db_summary", async () => (await prisma.$queryRawTyped(query.summary))[0])),
-    cached("pharmacy", session.user.id, `inventory-page-v2:${params.toString()}`, 180,
+    cached("pharmacy", session.user.id, `inventory-page-v3:${params.toString()}`, 180,
       async () => timing.measure("db_page", async () => (await prisma.$queryRaw<Array<{ total: number; rows: unknown[] }>>(query.selected))[0])),
   ]);
   return NextResponse.json({ totals: summary.data, page, limit, total: result.data.total,

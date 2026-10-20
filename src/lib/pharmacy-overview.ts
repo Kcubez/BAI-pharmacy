@@ -85,7 +85,7 @@ export async function getPharmacyOverviewResponse(req: NextRequest) {
   const session = await timing.measure("auth", () => auth.api.getSession({ headers: req.headers }));
   if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-  const cacheKey = `overview-v6:${req.nextUrl.searchParams.toString()}`;
+  const cacheKey = `overview-v7:${req.nextUrl.searchParams.toString()}`;
   const { data, hit } = await timing.measure("data", () => cached("pharmacy", session.user.id, cacheKey, 60, async () => timing.measure("db", async () => {
     const resolved = parsePeriodParams(req.nextUrl.searchParams);
     const { start, end } = resolvePeriodRange(resolved);
@@ -107,7 +107,7 @@ export async function getPharmacyOverviewResponse(req: NextRequest) {
     const cfFrom = resolved.period === "custom" ? start : new Date(Date.UTC(chartEnd.getUTCFullYear(), chartEnd.getUTCMonth() - chartMonths + 1, 1));
     const cfUntil = resolved.period === "overall" ? now : end;
     // All independent reads start together; compact totals replace six reads.
-    const [totalsRows, target, salesCur, salesPrev, arOpenRows, apOpenRows, cfCollectedRaw, cfPurchasedRaw, salesTrendRaw] = await Promise.all([
+    const [totalsRows, target, salesCur, salesPrev, arOpenRows, apOpenRows, cfCollectedRaw, cfPurchasedRaw, salesTrendRaw, arSources] = await Promise.all([
       prisma.$queryRawTyped(pharmacyOverviewTotals(session.user.id, start, end, new Date(balanceCutoff.getTime() - (historical ? 1 : 0)), new Date(balanceCutoff.getTime() + 90 * DAY_MS))),
       prisma.periodTarget.findFirst({
         where: { userId: session.user.id, ...anchor },
@@ -127,7 +127,19 @@ export async function getPharmacyOverviewResponse(req: NextRequest) {
       prisma.$queryRawTyped(pharmacyMonthlyCollections(session.user.id, cfFrom, cfUntil)),
       prisma.$queryRawTyped(pharmacyMonthlyPurchases(session.user.id, cfFrom, cfUntil)),
       prisma.$queryRawTyped(pharmacyMonthlySales(session.user.id, start, end)),
+      prisma.receivable.groupBy({
+        by: ["sourceSheet", "sourceFileName"],
+        where: { userId: session.user.id, ...notDeleted },
+        _max: { invoiceDate: true },
+      }),
     ]);
+    const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    const arSource = arSources.map(row => {
+      const month = monthNames.indexOf(row.sourceSheet?.trim().toLowerCase() ?? "");
+      const year = Number(row.sourceFileName?.match(/(?:19|20)\d{2}/)?.[0]) || row._max.invoiceDate?.getUTCFullYear() || 0;
+      return { month, year, rank: year * 12 + month };
+    }).filter(row => row.month >= 0).sort((a, b) => b.rank - a.rank)[0];
+    const arDataPeriod = arSource ? `${arSource.year || "Unknown year"}-${String(arSource.month + 1).padStart(2, "0")}` : null;
     const totals = totalsRows[0];
     const bankRows = bankRowsSchema.parse(totals?.collectionByBank ?? []);
     const salesTotal = totals?.sales ?? 0;
@@ -248,7 +260,7 @@ export async function getPharmacyOverviewResponse(req: NextRequest) {
       collection: { total: collectionTotal, invoices: totals?.collectionInvoices ?? 0, target: t.collection, kpi: trackKpi(collectionTotal, t.collection, ratio, showPacing) },
       purchases: { total: purchasesTotal, invoices: totals?.purchaseInvoices ?? 0, target: t.expense, kpi: limitKpi(purchasesTotal, t.expense) },
       ar: {
-        available: arAvailable, asOf: balanceAsOf,
+        available: arAvailable, asOf: balanceAsOf, dataPeriod: arDataPeriod,
         outstanding: arOutstanding, overdue: arOverdue, openCount: arOpenCount,
         limit: t.arLimit, kpi: limitKpi(arOverdue, t.arLimit),
       },
@@ -257,7 +269,7 @@ export async function getPharmacyOverviewResponse(req: NextRequest) {
         outstanding: apOutstanding, overdue: apOverdue, openCount: apOpenCount,
         limit: t.apLimit, kpi: limitKpi(apOverdue, t.apLimit),
       },
-      stock: { value: stockValue, skus: stockSkus, stockout: stockoutCount, expiring90 },
+      stock: { period: totals?.stockPeriod ?? null, asOf: balanceAsOf, value: stockValue, skus: stockSkus, stockout: stockoutCount, expiring90 },
       // Invoice comparison in the selected period; no cash payment ledger is available.
       cash: {
         net: collectionPurchaseDifference(collectionTotal, purchasesTotal),

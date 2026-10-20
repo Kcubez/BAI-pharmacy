@@ -23,6 +23,25 @@ function isScope(v: string | null): v is PharmaDeleteScope {
   return !!v && (PHARMA_DELETE_SCOPES as readonly string[]).includes(v);
 }
 
+// Preview the signed-in account's active records without changing data.
+export async function GET(req: NextRequest) {
+  const session = await auth.api.getSession({ headers: req.headers });
+  if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  const where = { userId: session.user.id, ...notDeleted };
+  const values = await Promise.all([
+    prisma.purchaseOrder.count({ where }), prisma.purchaseInvoice.count({ where }),
+    prisma.salesLine.count({ where }), prisma.receivable.count({ where }),
+    prisma.stockSnapshot.count({ where }), prisma.stockMovement.count({ where }),
+    prisma.expiryLot.count({ where }), prisma.stockReturn.count({ where }),
+    prisma.storeInLot.count({ where }), prisma.supplier.count({ where }),
+    prisma.pharmaProduct.count({ where }),
+  ]);
+  const keys = ["purchaseOrders", "purchaseInvoices", "salesLines", "receivables", "stockSnapshots",
+    "stockMovements", "expiryLots", "stockReturns", "storeInLots", "suppliers", "products"];
+  return NextResponse.json({ counts: Object.fromEntries(keys.map((key, i) => [key, values[i]])),
+    total: values.reduce((sum, count) => sum + count, 0) }, { headers: { "Cache-Control": "no-store" } });
+}
+
 // DELETE /api/pharmacy/delete-all?scope=purchase|sales|receivable|stock|levels|all
 export async function DELETE(req: NextRequest) {
   const session = await auth.api.getSession({ headers: req.headers });
@@ -31,6 +50,9 @@ export async function DELETE(req: NextRequest) {
   const scope = req.nextUrl.searchParams.get("scope");
   if (!isScope(scope)) {
     return NextResponse.json({ message: "Valid scope required: purchase|sales|receivable|stock|levels|all" }, { status: 400 });
+  }
+  if (scope === "all" && req.headers.get("x-pharmacy-confirmation") !== "RESET") {
+    return NextResponse.json({ message: "Type RESET to confirm moving all pharmacy data to Trash" }, { status: 400 });
   }
 
   const userId = session.user.id;
@@ -62,7 +84,8 @@ export async function DELETE(req: NextRequest) {
     await wipe("stockReturns", () => prisma.stockReturn.updateMany({ where: { userId, ...notDeleted }, data }));
     await wipe("storeInLots", () => prisma.storeInLot.updateMany({ where: { userId, ...notDeleted }, data }));
     // Min/Max live on the product row — reset one-way (re-import restores).
-    counts["resetLevels"] = (await prisma.pharmaProduct.updateMany({
+    // A full reset trashes the product itself; retain its levels for restoration.
+    if (scope !== "all") counts["resetLevels"] = (await prisma.pharmaProduct.updateMany({
       where: { userId, ...notDeleted, OR: [{ minQty: { not: null } }, { maxQty: { not: null } }] },
       data: { minQty: null, maxQty: null },
     })).count;
@@ -73,7 +96,7 @@ export async function DELETE(req: NextRequest) {
     await wipe("products", () => prisma.pharmaProduct.updateMany({ where: { userId, ...notDeleted }, data }));
   }
 
-  const total = Object.values(counts).reduce((s, n) => s + n, 0);
+  const total = Object.entries(counts).reduce((s, [key, n]) => s + (key === "resetLevels" ? 0 : n), 0);
   await bumpCacheVersion("pharmacy", userId);
   await publishEvent(userId, "pharmacy");
   return NextResponse.json({ success: true, scope, counts, total });
