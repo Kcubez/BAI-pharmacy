@@ -43,6 +43,7 @@ export function VirtualTable<T>({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     overscan: 8,
+    scrollMargin: 36,
     useFlushSync: false,
   });
   const template = columns.map((c) => c.width).join(" ");
@@ -50,23 +51,28 @@ export function VirtualTable<T>({
     a === "right" ? "justify-end text-right" : a === "center" ? "justify-center text-center" : "justify-start text-left";
 
   return (
-    <div className="overflow-x-auto">
-      <div className="min-w-[720px]">
+    <div ref={scrollRef} className="max-w-full overflow-auto" style={{ height: height + 36 }}>
+      {/* One viewport owns both axes, including space used by native scrollbars.
+          The shared grid also grows to fit the minimum widths of all columns. */}
+      <div
+        className="grid gap-x-2 px-2"
+        style={{ gridTemplateColumns: template, width: "max-content", minWidth: "max(720px, 100%)" }}
+      >
         <div
-          className="grid items-center gap-2 px-2 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground"
-          style={{ gridTemplateColumns: template, height: 36 }}
+          className="sticky top-0 z-10 col-span-full grid grid-cols-subgrid items-center gap-2 bg-card text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground"
+          style={{ height: 36 }}
         >
           {columns.map((c) => (
             <div key={c.key} className={`flex ${alignClass(c.align)}`}>{c.header}</div>
           ))}
         </div>
-        <div ref={scrollRef} className="overflow-y-auto border-t border-border" style={{ height }}>
+        <div className="col-span-full min-w-0 border-t border-border" style={{ minHeight: height }}>
           {isLoading ? (
             <div className="flex flex-col">
               {Array.from({ length: Math.min(10, Math.max(3, Math.floor(height / rowHeight))) }).map((_, idx) => (
                 <div
                   key={`skeleton-row-${idx}`}
-                  className="grid w-full items-center gap-2 border-b border-border/40 px-2"
+                  className="grid w-full items-center gap-2 border-b border-border/40"
                   style={{ gridTemplateColumns: template, height: rowHeight }}
                 >
                   {columns.map((c) => (
@@ -86,15 +92,15 @@ export function VirtualTable<T>({
                 return (
                   <div
                     key={keyOf(row, v.index)}
-                    className="absolute left-0 top-0 grid w-full items-center gap-2 border-b border-border/50 px-2 transition hover:bg-muted/30"
+                    className="absolute left-0 top-0 grid w-full items-center gap-2 border-b border-border/50 transition hover:bg-muted/30"
                     style={{
                       gridTemplateColumns: template,
                       height: rowHeight,
-                      transform: `translateY(${v.start}px)`,
+                      transform: `translateY(${v.start - virtualizer.options.scrollMargin}px)`,
                     }}
                   >
                     {columns.map((c) => (
-                      <div key={c.key} className={`flex items-center ${alignClass(c.align)} text-sm`}>
+                      <div key={c.key} className={`flex min-w-0 items-center ${alignClass(c.align)} text-sm`}>
                         {c.cell(row)}
                       </div>
                     ))}

@@ -1520,7 +1520,6 @@ function TeamView() {
       collected: rows.reduce((sum, row) => sum + row.collected, 0),
       outstanding: rows.reduce((sum, row) => sum + row.outstanding, 0),
       overdue: rows.reduce((sum, row) => sum + row.overdue, 0),
-      paid: rows.reduce((sum, row) => sum + row.paidCount, 0),
       reps: rows.length,
     };
   }, [d?.bySalesperson]);
@@ -1544,7 +1543,7 @@ function TeamView() {
       {d && (
         <>
           <FadeIn className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <FinanceKpiCard label="Collected" value={mmk(teamTotals.collected)} unit={`MMK · ${teamTotals.paid} paid`} detail="Team collections in selected period" status="Collected" icon={Wallet} accentClass="border-l-emerald-500" />
+            <FinanceKpiCard label="Collected" value={mmk(teamTotals.collected)} unit="MMK" detail="Team collections in selected period" status="Collected" icon={Wallet} accentClass="border-l-emerald-500" />
             <FinanceKpiCard label="Outstanding AR" value={mmk(teamTotals.outstanding)} unit="MMK" detail={`${teamTotals.reps} active salespeople`} status="Open" icon={Users} accentClass="border-l-sky-500" />
             <FinanceKpiCard label="Overdue AR" value={mmk(teamTotals.overdue)} unit="MMK" detail="Needs collection follow-up" status={teamTotals.overdue > 0 ? "Review" : "Clear"} icon={AlertTriangle} accentClass={teamTotals.overdue > 0 ? "border-l-red-500" : "border-l-emerald-500"} />
             <FinanceKpiCard label="Coverage Areas" value={mmk(d.byArea.length)} unit="areas" detail={`${teamTotals.reps} people reporting`} status="Tracked" icon={BarChart3} accentClass="border-l-violet-500" />
@@ -1564,7 +1563,7 @@ function TeamView() {
                     <TableRow>
                       <TableHead>Salesperson</TableHead>
                       <TableHead className="text-right">Collected</TableHead>
-                      <TableHead className="text-right">Paid</TableHead>
+                      <TableHead className="text-right">Paid invoices</TableHead>
                       <TableHead className="text-right">Outstanding</TableHead>
                       <TableHead className="text-right">Overdue</TableHead>
                       <TableHead className="text-right">Rate</TableHead>
@@ -1575,7 +1574,7 @@ function TeamView() {
                       <TableRow key={t.salesperson}>
                         <TableCell className="font-bold text-sm">{t.salesperson}</TableCell>
                         <TableCell className="text-right font-extrabold text-emerald-600 dark:text-emerald-400">{mmk(t.collected)}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">{t.paidCount}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{t.paidCount.toLocaleString("en-US")}</TableCell>
                         <TableCell className="text-right font-bold">{mmk(t.outstanding)}</TableCell>
                         <TableCell className={`text-right font-bold ${t.overdue > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
                           {t.overdue > 0 ? mmk(t.overdue) : "—"}
